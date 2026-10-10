@@ -1,0 +1,13 @@
+[package]
+name = "craft-redact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aho-corasick.workspace = true
+regex.workspace = true

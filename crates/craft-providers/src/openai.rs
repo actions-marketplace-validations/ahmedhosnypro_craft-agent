@@ -1,0 +1,191 @@
+//! OpenAI Chat Completions adapter: request encoding, SSE decode, error
+//! mapping, and the shared retry ladder, over the neutral provider seam.
+
+mod chunk;
+mod lane;
+mod request;
+
+use std::time::Duration;
+
+use craft_core::error::{ProviderError, parse_retry_after};
+use craft_core::provider::{ModelEventStream, Provider};
+use craft_core::types::ModelRequest;
+use serde_json::Value;
+
+use chunk::WireError;
+use lane::lane_stream;
+
+use crate::retry;
+use crate::transport;
+
+/// Production default; the base includes the version segment, and a
+/// caller may override it for any OpenAI-compatible lane.
+pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+
+/// The Chat Completions dialect mounted over one base URL.
+pub struct OpenAiProvider {
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+    api_key: String,
+    sse: craft_core::sse::SseOptions,
+}
+
+impl OpenAiProvider {
+    pub fn new(base_url: &str, model: &str, api_key: &str) -> Result<Self, ProviderError> {
+        let client = transport::client()?;
+        Ok(Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            model: model.to_owned(),
+            api_key: api_key.to_owned(),
+            sse: craft_core::sse::SseOptions::default(),
+        })
+    }
+
+    /// Remounts the lane over an explicit total request deadline; the
+    /// constructor's deadline comes from the shared env knob.
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Result<Self, ProviderError> {
+        self.client = transport::client_with_timeout(timeout)?;
+        Ok(self)
+    }
+
+    /// Sends one request on the shared ladder, mounted over this
+    /// dialect's URL, headers, and payload.
+    async fn connect(&self, request: &ModelRequest) -> Result<reqwest::Response, ProviderError> {
+        let body = request::encode(request, &self.model)?;
+        let payload =
+            serde_json::to_string(&body).map_err(|err| ProviderError::InvalidRequest {
+                detail: err.to_string(),
+            })?;
+        let url = format!("{}/chat/completions", self.base_url);
+        retry::climb(
+            &self.client,
+            |client| {
+                client
+                    .post(&url)
+                    .bearer_auth(&self.api_key)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(payload.clone())
+            },
+            http_failure,
+        )
+        .await
+    }
+}
+
+impl Provider for OpenAiProvider {
+    async fn stream(&self, request: ModelRequest) -> Result<ModelEventStream, ProviderError> {
+        let response = self.connect(&request).await?;
+        Ok(lane_stream(response, self.sse))
+    }
+}
+
+/// Non-2xx responses: the live Retry-After header and the JSON error
+/// body refine the status classification before the taxonomy closes.
+async fn http_failure(response: reqwest::Response) -> ProviderError {
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after);
+    let body = retry::read_capped(response, retry::ERROR_BODY_CAP_BYTES).await;
+    let fields = error_fields(&body);
+    http_error_from(status, retry_after, &fields)
+}
+
+/// The error envelope's salient string fields, decoded from the body.
+struct ErrorFields {
+    message: Option<String>,
+    code: Option<String>,
+    kind: Option<String>,
+}
+
+fn error_fields(body: &str) -> ErrorFields {
+    let envelope = serde_json::from_str::<Value>(body).ok();
+    let field = |name: &str| {
+        envelope
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    ErrorFields {
+        message: field("message"),
+        code: field("code"),
+        kind: field("type"),
+    }
+}
+
+fn http_error_from(
+    status: reqwest::StatusCode,
+    retry_after: Option<Duration>,
+    fields: &ErrorFields,
+) -> ProviderError {
+    let detail = match &fields.message {
+        Some(message) => format!("{status}: {message}"),
+        None => status.to_string(),
+    };
+    match status.as_u16() {
+        401 | 403 => ProviderError::Auth { detail },
+        _ if is_quota(
+            fields.code.as_deref(),
+            fields.kind.as_deref(),
+            fields.message.as_deref(),
+        ) =>
+        {
+            ProviderError::QuotaExhausted { detail }
+        }
+        429 => ProviderError::RateLimit { retry_after },
+        413 => ProviderError::PayloadTooLarge { detail },
+        _ if is_context_window(fields.code.as_deref(), fields.message.as_deref()) => {
+            ProviderError::ContextWindow { detail }
+        }
+        _ if status.is_server_error() || status.as_u16() == 408 => {
+            ProviderError::Transient { detail }
+        }
+        _ if status.is_client_error() => ProviderError::InvalidRequest { detail },
+        _ => ProviderError::from_http_status(status),
+    }
+}
+
+fn is_context_window(code: Option<&str>, message: Option<&str>) -> bool {
+    code.is_some_and(|code| code.contains("context_length"))
+        || message.is_some_and(|message| message.contains("context length"))
+}
+
+/// A spent quota is deterministic: it never rides either ladder.
+fn is_quota(code: Option<&str>, kind: Option<&str>, message: Option<&str>) -> bool {
+    [code, kind, message]
+        .into_iter()
+        .any(|field| field.is_some_and(|field| field.contains("insufficient_quota")))
+}
+
+/// Mid-stream error envelopes map onto the same taxonomy as HTTP rows.
+fn map_error_envelope(error: WireError) -> ProviderError {
+    let detail = error
+        .message
+        .clone()
+        .unwrap_or_else(|| String::from("provider error mid-stream"));
+    let kind = error.kind.as_deref();
+    let code = error.code.as_deref();
+    if is_quota(code, kind, error.message.as_deref()) {
+        return ProviderError::QuotaExhausted { detail };
+    }
+    if kind.is_some_and(|kind| kind.contains("rate_limit")) {
+        return ProviderError::RateLimit { retry_after: None };
+    }
+    if is_context_window(code, error.message.as_deref()) {
+        return ProviderError::ContextWindow { detail };
+    }
+    match kind {
+        Some("server_error") | Some("service_unavailable") => ProviderError::Transient { detail },
+        Some("invalid_request_error") => ProviderError::InvalidRequest { detail },
+        Some("authentication_error") | Some("permission_error") => ProviderError::Auth { detail },
+        _ => ProviderError::Transport {
+            detail: format!("{}: {detail}", kind.unwrap_or("unknown error")),
+        },
+    }
+}

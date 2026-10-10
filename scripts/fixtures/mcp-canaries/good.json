@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "repo-stats": {
+      "command": "/usr/local/bin/repo-stats-mcp",
+      "args": ["--mode", "read-only"],
+      "env": { "REPO_STATS_MODE": "pr" },
+      "cwd": "/workspace/reports",
+      "enabled": true,
+      "enabledTools": ["pr_summary"],
+      "disabledTools": [],
+      "startupTimeoutSecs": 30,
+      "toolTimeoutSecs": 120
+    },
+    "minimal": { "command": "/bin/true" }
+  }
+}

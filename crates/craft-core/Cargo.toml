@@ -1,0 +1,22 @@
+[package]
+name = "craft-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror.workspace = true
+reqwest = { version = "0.13", default-features = false }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1", features = ["time"] }
+bytes = "1"
+eventsource-stream = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util"] }

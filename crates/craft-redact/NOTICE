@@ -1,0 +1,21 @@
+NOTICE
+
+The pattern-layer rules in src/patterns.rs include regexes ported from
+the gitleaks default configuration:
+
+  gitleaks — https://github.com/gitleaks/gitleaks
+  Copyright (c) Zachary Rice and gitleaks contributors
+  Licensed under the MIT License (https://opensource.org/licenses/MIT)
+
+Ported rule ids: anthropic-api-key, aws-access-token, gcp-api-key,
+github-app-token, github-fine-grained-pat, github-oauth, github-pat,
+github-refresh-token, jwt, npm-access-token, openai-api-key,
+slack-bot-token, slack-legacy-workspace-token, slack-user-token.
+
+Local rules (authored in this crate, not gitleaks ports):
+gcp-oauth-token (ya29 shape; gitleaks master carries no ya29 rule),
+pem-private-key, authorization-basic, authorization-bearer,
+url-credentials, x-access-token. OpenAI and Anthropic entries pair the
+verbatim gitleaks regex with a relaxed companion shape for log
+redaction; gcp-api-key, jwt, and npm entries drop the gitleaks
+trailing-terminator guard so the terminator survives replacement.

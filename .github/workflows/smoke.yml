@@ -9,7 +9,7 @@ on:
         description: Release tag the smoke downloads the binary from.
         required: false
         type: string
-        default: v1
+        default: v0.0.1
 
 permissions:
   contents: read

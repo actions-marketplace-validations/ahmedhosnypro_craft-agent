@@ -63,7 +63,7 @@ inputs:
   version:
     description: Release tag the binary is downloaded from.
     required: false
-    default: v1
+    default: v0.0.1
   release-repository:
     description: Repository that hosts the release assets.
     required: false

@@ -12,8 +12,7 @@ promises when credentials are absent — never model success.
 - A release with the `craft-agent-<triple>` and
   `craft-helpers-<triple>` binaries and `checksums.txt`
   assets must exist in this repository (`scripts/build-release.sh` builds
-  them). Dispatch with `version` set to the exact tag until the moving
-  `v1` tag points at a release; the default is `v1`.
+  them). The default `version` is the current release tag, `v0.0.1`.
 - The install step downloads with unauthenticated curl, so the repository
   must be public for the release download to succeed.
 - No secrets are required or read. If any were set, the smoke would still
@@ -23,7 +22,7 @@ promises when credentials are absent — never model success.
 ## Dispatching
 
 Actions tab → **smoke** → **Run workflow** → pick the branch → set
-`version` if not `v1` → **Run**. The job must finish in well under a
+`version` if not `v0.0.1` → **Run**. The job must finish in well under a
 minute; `timeout-minutes: 10` bounds any hang.
 
 ## What each leg proves
@@ -78,14 +77,11 @@ the deeper runs eliminate 23-46%.
 ## Follow-ups after a green dispatch
 
 - Publish the release: build the musl binaries, attach the two binaries
-  plus `checksums.txt` to the semver tag, and move the `v1` tag to it.
-- Re-dispatch the smoke with the default `version: v1` to prove the
-  moving tag resolves to the just-published release. (When the release
-  commit changes files under `.github/workflows/`, the tag move is
-  skipped with a warning and this check waits on the manual repoint —
-  see docs/release.md.)
+  plus `checksums.txt` to the semver tag.
+- Re-dispatch the smoke with the default `version` to prove the
+  tag resolves to the just-published release.
 - External-consumer readiness: another repository can now use the action
-  pinned at `uses: ahmedhosnypro/craft-agent@v1` (docs tell consumers to
+  pinned at `uses: ahmedhosnypro/craft-agent@v0.0.1` (docs tell consumers to
   full-SHA-pin) with its own provider key mapped in step `env` — the
   in-repo smoke having proven the download, checksum, mission, and
   output contract it will rely on.

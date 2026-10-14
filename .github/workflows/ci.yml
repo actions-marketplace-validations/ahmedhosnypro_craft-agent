@@ -5,8 +5,14 @@ name: ci
 on:
   push:
     branches: [main]
+    # Markdown-only commits (README, docs, agent profiles) carry no code
+    # or build inputs; the full gate still runs on every other change.
+    paths-ignore:
+      - "**.md"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
 
 permissions:
   contents: read

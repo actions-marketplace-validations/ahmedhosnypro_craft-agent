@@ -1,5 +1,7 @@
 # craft-agent
 
+Available on the [GitHub Marketplace](https://github.com/marketplace/actions/craft-agent).
+
 BYOK agentic AI agent for GitHub Actions. The action downloads the
 release binaries for the runner, verifies them against the release
 checksums, then runs one bounded mission: an agent run over a prompt,
@@ -28,7 +30,7 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run the agent
-        uses: ahmedhosnypro/craft-agent@v1
+        uses: ahmedhosnypro/craft-agent@v0.0.1
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
@@ -43,9 +45,9 @@ jobs:
 
 Supported runners are GitHub-hosted Linux x86_64 and aarch64; any
 other triple fails with an actionable error and never falls back to
-building from source. Pin the action by major tag (`@v1`, fixes
-within the major) or by full commit SHA (frozen); the `version` input
-selects the release tag the binaries download from.
+building from source. Pin the action by release tag (`@v0.0.1`) or by
+full commit SHA (frozen); the `version` input selects the release tag
+the binaries download from.
 
 ## Bring your own key
 
@@ -79,7 +81,7 @@ call never inherits them.
 | `egress-allowlist` | empty | Comma-separated hosts bash commands may talk to; empty means no egress gate. |
 | `write-repo` | empty | `owner/name` the gh tool's write verbs must target; empty means no write gate. |
 | `read-roots` | empty | Extra read-only roots for `read_file`/`glob`/`grep`, comma separated, absolute paths; empty defaults to the runner temp directory, `off` disables the feature. |
-| `version` | `v1` | Release tag the binaries are downloaded from. |
+| `version` | `v0.0.1` | Release tag the binaries are downloaded from. |
 | `release-repository` | `ahmedhosnypro/craft-agent` | Repository that hosts the release assets. |
 
 No input is ever interpolated into a run script: every input reaches

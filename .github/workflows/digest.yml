@@ -130,7 +130,7 @@ jobs:
         uses: ./
         with:
           mission: digest
-          version: v1
+          version: v0.0.1
           provider: ${{ vars.CRAFT_AGENT_PROVIDER }}
           model: ${{ vars.CRAFT_AGENT_MODEL }}
           args: "--org ${{ env.DIGEST_ORG }} --since ${{ steps.window.outputs.since }}${{ inputs.dry-run && ' --dry-run' || '' }}"

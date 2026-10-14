@@ -94,7 +94,7 @@ impl CapSpec {
         knob: ENV_MAX_CONCURRENCY,
         default: 4,
         min: 1,
-        max: 16,
+        max: 1024,
     };
 
     fn range_error(&self) -> String {

@@ -16,6 +16,8 @@
 //   9  session JSONL: model-visible <=> logged; native-block replay
 //  10  stream-json: every NDJSON line schema-valid; terminal event
 //      carries exit code + category + total usage
+//  11  salvaged marker arguments: the call never executes; the model
+//      sees an is_error result naming the raw fragment
 //
 // Scenarios 5-6 live in budget.rs, 7 in stationarity.rs, 8 in
 // denial.rs, 9 in session_log.rs, 10 in stream_json.rs. The step ladder
@@ -151,6 +153,48 @@ async fn idle_timeout_bounds_a_stalled_stream() {
     assert_eq!(outcome.exit_code(), 1);
     assert_eq!(outcome.category, CancelCategory::Error);
     assert!(outcome.detail.contains("idle"));
+}
+
+/// A call whose arguments are the fold's salvage marker never reaches
+/// the tool: the model sees an is_error result naming the raw fragment
+/// and the run continues.
+#[tokio::test]
+async fn salvaged_arguments_short_circuit_the_tool_with_feedback() {
+    let marker = craft_core::types::salvage_arguments("not json {");
+    let provider = FakeProvider::new(vec![
+        tool_turn("call-1", "scripted", &marker, usage(2, 1)),
+        text_turn("recovered", StopReason::EndTurn, usage(2, 1)),
+    ]);
+    let runner = Runner::new(
+        provider.clone(),
+        registry_with_ok("scripted", "tool output"),
+        config(),
+    );
+    let (outcome, events) = run_collect(&runner, "use the tool").await;
+
+    assert_eq!(outcome.exit_code(), 0);
+    let results: Vec<(bool, String)> = events
+        .iter()
+        .filter_map(|event| match event {
+            craft_runtime::RuntimeEvent::ToolResult {
+                is_error, content, ..
+            } => Some((*is_error, content.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1, "one tool result");
+    assert!(results[0].0, "the marker call is an is_error result");
+    assert_eq!(
+        results[0].1,
+        "tool arguments were not valid JSON; the call was not executed: not json {"
+    );
+    assert!(
+        matches!(
+            provider.requests()[1].messages[2].as_ref(),
+            ChatMessage::Tool { is_error, .. } if *is_error
+        ),
+        "the feedback rides back to the model"
+    );
 }
 
 /// Every request assembles the transcript by sharing the session's

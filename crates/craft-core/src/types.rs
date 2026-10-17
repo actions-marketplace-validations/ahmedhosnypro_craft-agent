@@ -70,6 +70,24 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// Marker key for tool arguments that arrived malformed from the
+/// model; the raw fragment rides as the value, capped.
+pub const INVALID_TOOL_ARGUMENTS_KEY: &str = "invalid_tool_arguments";
+/// Cap on the raw fragment embedded in the marker.
+pub const SALVAGED_ARGUMENTS_MAX_BYTES: usize = 256;
+
+/// Wraps malformed tool arguments into a valid JSON object so every
+/// downstream consumer (tool execution, transcript, wire re-encode)
+/// stays well-formed. The raw is truncated at a char boundary under
+/// the cap.
+pub fn salvage_arguments(raw: &str) -> String {
+    let mut cut = raw.len().min(SALVAGED_ARGUMENTS_MAX_BYTES);
+    while !raw.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    serde_json::json!({ INVALID_TOOL_ARGUMENTS_KEY: &raw[..cut] }).to_string()
+}
+
 /// A tool offered to the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSpec {

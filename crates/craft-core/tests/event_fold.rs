@@ -1,10 +1,13 @@
 //! Fold semantics: text and tool-call fragments accumulate by wire index
-//! into a complete turn, and hostile fragments fail closed with typed
-//! errors instead of panicking.
+//! into a complete turn, hostile fragments fail closed with typed
+//! errors, and malformed tool arguments salvage into a marker.
 
 use craft_core::error::ProviderError;
 use craft_core::events::{FoldError, FoldedTurn, ModelEvent, TurnCaps, TurnFold};
-use craft_core::types::{StopReason, ToolCall, Usage};
+use craft_core::types::{
+    INVALID_TOOL_ARGUMENTS_KEY, SALVAGED_ARGUMENTS_MAX_BYTES, StopReason, ToolCall, Usage,
+    salvage_arguments,
+};
 
 fn text(s: &str) -> ModelEvent {
     ModelEvent::TextDelta {
@@ -131,18 +134,55 @@ fn empty_string_id_is_treated_as_absent() -> Result<(), FoldError> {
 }
 
 #[test]
-fn truncated_json_arguments_fail_closed() {
-    let err = fold(&[delta(0, Some("c1"), Some("bash"), "{\"a\""), end_turn()]);
-    assert!(
-        matches!(err, Err(FoldError::InvalidArguments { index: 0 })),
-        "truncated argument JSON must fail closed"
-    );
+fn truncated_json_arguments_salvage_into_a_marker() -> Result<(), FoldError> {
+    let turn = fold(&[delta(0, Some("c1"), Some("bash"), "{\"a\""), end_turn()])?;
+    assert_eq!(turn.tool_calls.len(), 1);
+    assert_eq!(turn.tool_calls[0].arguments, salvage_arguments("{\"a\""));
+    Ok(())
 }
 
 #[test]
-fn garbage_json_arguments_fail_closed() {
-    let err = fold(&[delta(0, Some("c1"), Some("bash"), "not json"), end_turn()]);
-    assert!(matches!(err, Err(FoldError::InvalidArguments { index: 0 })));
+fn garbage_json_arguments_salvage_into_a_marker() -> Result<(), FoldError> {
+    let turn = fold(&[delta(0, Some("c1"), Some("bash"), "not json"), end_turn()])?;
+    assert_eq!(turn.tool_calls[0].arguments, salvage_arguments("not json"));
+    Ok(())
+}
+
+#[test]
+fn salvage_keeps_good_calls_beside_a_bad_one() -> Result<(), FoldError> {
+    let turn = fold(&[
+        delta(0, Some("good"), Some("bash"), "{\"a\":1}"),
+        delta(1, Some("bad"), Some("grep"), "{\"b\""),
+        end_turn(),
+    ])?;
+    assert_eq!(turn.tool_calls.len(), 2);
+    assert_eq!(turn.tool_calls[0].arguments, "{\"a\":1}");
+    assert_eq!(turn.tool_calls[1].arguments, salvage_arguments("{\"b\""));
+    Ok(())
+}
+
+#[test]
+fn salvage_marker_wraps_the_raw_as_a_valid_json_object() {
+    let marker = salvage_arguments("not json");
+    let parsed = serde_json::from_str::<serde_json::Value>(&marker);
+    assert!(parsed.is_ok(), "marker must be valid JSON, got {marker}");
+}
+
+#[test]
+fn salvage_marker_cuts_multibyte_raw_on_a_char_boundary_under_the_cap()
+-> Result<(), Box<dyn std::error::Error>> {
+    let raw = "あ".repeat(300);
+    let value: serde_json::Value = serde_json::from_str(&salvage_arguments(&raw))?;
+    let embedded = value
+        .get(INVALID_TOOL_ARGUMENTS_KEY)
+        .and_then(serde_json::Value::as_str);
+    let Some(embedded) = embedded else {
+        return Err("marker is missing the invalid-arguments key".into());
+    };
+    assert!(embedded.len() <= SALVAGED_ARGUMENTS_MAX_BYTES);
+    assert!(raw.starts_with(embedded));
+    assert!(embedded.chars().all(|c| c == 'あ'));
+    Ok(())
 }
 
 #[test]

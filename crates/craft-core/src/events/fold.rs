@@ -1,5 +1,6 @@
 //! The streaming fold: assembles arrival-ordered events into a complete
-//! turn, fail-closed on hostile fragments.
+//! turn, fail-closed on hostile fragments; malformed tool arguments
+//! salvage into a marker instead of failing the turn.
 
 use std::collections::BTreeMap;
 
@@ -237,8 +238,8 @@ impl TurnFold {
         Ok(())
     }
 
-    /// Completes the turn; every call must have a name and, unless the
-    /// call takes no parameters, JSON-parseable arguments.
+    /// Completes the turn; every call must have a name, and malformed
+    /// arguments ride the salvage marker instead of failing the turn.
     pub fn finish(self) -> Result<FoldedTurn, FoldError> {
         let (stop_reason, usage) = self.finished.ok_or(FoldError::Unfinished)?;
         let mut tool_calls = Vec::with_capacity(self.calls.len());
@@ -246,15 +247,17 @@ impl TurnFold {
             if partial.name.is_empty() {
                 return Err(FoldError::MissingToolName { index });
             }
-            if !partial.arguments.is_empty()
-                && serde_json::from_str::<serde_json::Value>(&partial.arguments).is_err()
-            {
-                return Err(FoldError::InvalidArguments { index });
-            }
+            let valid = partial.arguments.is_empty()
+                || serde_json::from_str::<serde_json::Value>(&partial.arguments).is_ok();
+            let arguments = if valid {
+                partial.arguments
+            } else {
+                crate::types::salvage_arguments(&partial.arguments)
+            };
             tool_calls.push(ToolCall {
                 id: partial.id.unwrap_or_default(),
                 name: partial.name,
-                arguments: partial.arguments,
+                arguments,
             });
         }
         let native_blocks = pack_native_blocks(self.native);

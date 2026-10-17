@@ -159,6 +159,14 @@ pub fn dying_turn(err: ProviderError) -> Turn {
     ])
 }
 
+/// A turn whose stream ends at EOF without the terminal event: the
+/// fold reports the stream unfinished.
+pub fn unfinished_turn(text: &str) -> Turn {
+    Turn::Events(vec![Ok(ModelEvent::TextDelta {
+        text: String::from(text),
+    })])
+}
+
 /// A complete turn with no content and the given terminal stop reason.
 pub fn empty_stop_turn(stop: StopReason, used: Usage) -> Turn {
     Turn::Events(vec![Ok(ModelEvent::TurnFinished {

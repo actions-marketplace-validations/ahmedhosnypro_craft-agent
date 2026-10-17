@@ -249,21 +249,21 @@ fn object_mut(value: &mut Value) -> Result<&mut serde_json::Map<String, Value>, 
 
 /// A functionCall's args: the neutral arguments are raw JSON-object
 /// text; the wire wants the object itself. An empty text is the empty
-/// object, anything unparsable or non-object is a typed rejection.
+/// object, anything unparsable or non-object rides the salvage marker,
+/// so a hostile history never fails request building.
 fn wire_args(arguments: &str) -> Result<Value, ProviderError> {
-    let parsed = if arguments.is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::from_str(arguments).map_err(|err| ProviderError::InvalidRequest {
-            detail: format!("tool arguments are not valid JSON: {err}"),
-        })?
-    };
-    if !parsed.is_object() {
-        return Err(ProviderError::InvalidRequest {
-            detail: String::from("tool arguments must be a JSON object"),
-        });
+    if arguments.is_empty() {
+        return Ok(serde_json::json!({}));
     }
-    Ok(parsed)
+    if let Ok(parsed) = serde_json::from_str::<Value>(arguments)
+        && parsed.is_object()
+    {
+        return Ok(parsed);
+    }
+    let salvaged = craft_core::types::salvage_arguments(arguments);
+    serde_json::from_str(&salvaged).map_err(|err| ProviderError::Transport {
+        detail: format!("the salvage marker must be a JSON object: {err}"),
+    })
 }
 
 /// The documented response object: an error result rides the error key,
@@ -275,4 +275,49 @@ fn wire_response(content: &str) -> Value {
         return parsed;
     }
     serde_json::json!({"output": content})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft_core::types::{INVALID_TOOL_ARGUMENTS_KEY, SALVAGED_ARGUMENTS_MAX_BYTES};
+
+    #[test]
+    fn malformed_history_arguments_ride_the_salvage_marker() {
+        for raw in ["{\"cmd\":", "[1, 2]", "Paris"] {
+            let value = wire_args(raw).expect("malformed history never fails the encode");
+            assert_eq!(
+                value,
+                serde_json::json!({ INVALID_TOOL_ARGUMENTS_KEY: raw }),
+                "raw {raw} rides the marker"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_history_arguments_encode_as_the_empty_object() {
+        let value = wire_args("").expect("the empty text is the empty object");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn object_history_arguments_encode_verbatim() {
+        let value = wire_args("{\"cmd\":\"ls\"}").expect("an object history parses");
+        assert_eq!(value, serde_json::json!({"cmd": "ls"}));
+    }
+
+    #[test]
+    fn oversized_malformed_history_truncates_at_a_char_boundary() {
+        let raw = "€".repeat(SALVAGED_ARGUMENTS_MAX_BYTES / 3 + 2);
+        let value = wire_args(&raw).expect("malformed history never fails the encode");
+        let salvaged = value
+            .get(INVALID_TOOL_ARGUMENTS_KEY)
+            .and_then(Value::as_str)
+            .expect("the marker carries the raw fragment");
+        let expected = "€".repeat((SALVAGED_ARGUMENTS_MAX_BYTES - 1) / "€".len());
+        assert_eq!(
+            salvaged, expected,
+            "the cut lands on a char boundary under the cap"
+        );
+    }
 }

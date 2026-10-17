@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use craft_core::error::ProviderError;
-use craft_core::events::{FoldedTurn, ModelEvent, TurnCaps, TurnFold};
+use craft_core::events::{FoldError, FoldedTurn, ModelEvent, TurnCaps, TurnFold};
 use craft_core::provider::Provider;
 use craft_core::types::{ModelRequest, Usage};
 use futures::StreamExt;
@@ -22,7 +22,8 @@ pub(crate) enum StepStop {
 
 /// Where one attempt failed. The seam splits connect-phase failures
 /// (already through the provider's ladder) from in-stream deaths (the
-/// step ladder's to replay); fold failures are semantic.
+/// step ladder's to replay); the fold failures that land here are
+/// semantic.
 enum AttemptError {
     Connect(ProviderError),
     Stream(ProviderError),
@@ -93,8 +94,10 @@ impl<P: Provider + Send + Sync> StepCtx<'_, P> {
 impl<P: Provider + Send + Sync> StepCtx<'_, P> {
     /// One streaming attempt. The seam tags where a failure surfaced:
     /// connect-phase errors already climbed the provider ladder, so the
-    /// step ladder replays only in-stream deaths; fold failures are
-    /// semantic and never replay.
+    /// step ladder replays only in-stream deaths; a fold that ends
+    /// without the terminal event is a mid-stream death and replays on
+    /// the same ladder, while every other fold failure is semantic and
+    /// never replayed.
     async fn attempt(
         &self,
         request: ModelRequest,
@@ -127,7 +130,9 @@ impl<P: Provider + Send + Sync> StepCtx<'_, P> {
             fold.push(event)
                 .map_err(|err| AttemptError::Fold(fold_error(err)))?;
         }
-        fold.finish()
-            .map_err(|err| AttemptError::Fold(fold_error(err)))
+        fold.finish().map_err(|err| match err {
+            FoldError::Unfinished => AttemptError::Stream(ProviderError::StreamClosed),
+            err => AttemptError::Fold(fold_error(err)),
+        })
     }
 }

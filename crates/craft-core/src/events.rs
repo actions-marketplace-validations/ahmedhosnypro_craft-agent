@@ -1,5 +1,6 @@
 //! Model events and the fold that assembles a streamed turn into a
-//! complete one, fail-closed on hostile fragments.
+//! complete one, fail-closed on hostile fragments; malformed tool
+//! arguments salvage into a marker instead of failing the turn.
 
 mod fold;
 
@@ -70,8 +71,6 @@ pub enum FoldError {
     DuplicateToolIndex { index: u64 },
     #[error("tool call at wire index {index} never received a name")]
     MissingToolName { index: u64 },
-    #[error("tool arguments at wire index {index} are not valid JSON")]
-    InvalidArguments { index: u64 },
     #[error("{field} would reach {len} bytes, over the {cap}-byte cap")]
     FieldTooLarge {
         field: &'static str,

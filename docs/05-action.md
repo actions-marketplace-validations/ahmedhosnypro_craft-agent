@@ -24,7 +24,7 @@ the live-integration workflow are the two shipped consumers.
 | `egress-allowlist` | empty | Comma-separated hosts bash commands may talk to; empty means no egress gate. |
 | `write-repo` | empty | `owner/name` the gh tool's write verbs must target; empty means no write gate. Setting it also skips `gh auth setup-git`, since the credential helper would bypass the gate for plain git. |
 | `read-roots` | empty | Extra read-only roots for `read_file`/`glob`/`grep`, comma separated, absolute paths; empty defaults to the runner temp directory, `off` disables the feature. |
-| `version` | `v0.0.3` | Release tag the binary is downloaded from. |
+| `version` | `v0.0.4` | Release tag the binary is downloaded from. |
 | `release-repository` | `ahmedhosnypro/craft-agent` | Repository hosting the release assets. |
 
 Provider keys are **not** inputs. They reach the binary only through the
@@ -127,4 +127,4 @@ SHA with the version in a trailing comment. Consumers of this action
 should do the same: pin `ahmedhosnypro/craft-agent` by full commit SHA and
 pin the `version` input to an exact release tag for reproducibility. The
 in-repo digest workflow deliberately consumes `./` with
-`version: v0.0.3`, pinning the daily digest to an exact release.
+`version: v0.0.4`, pinning the daily digest to an exact release.

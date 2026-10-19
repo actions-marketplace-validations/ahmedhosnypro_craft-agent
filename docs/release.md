@@ -52,7 +52,7 @@ green — the release itself is already complete.
 
 The Action's `version` input selects the release tag it downloads from:
 
-- `version: v0.0.3` (default) — the current release tag.
+- `version: v0.0.4` (default) — the current release tag.
 - `version: <exact tag>` — any other exact tag, for reproducible runs;
   every asset and its checksums stay attached to that tag.
 

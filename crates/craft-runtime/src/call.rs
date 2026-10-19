@@ -3,7 +3,7 @@
 //! `is_error` results the model can act on; nothing in the tool layer
 //! ends a run.
 
-use craft_core::types::{ChatMessage, ToolCall};
+use craft_core::types::{ChatMessage, INVALID_TOOL_ARGUMENTS_KEY, ToolCall};
 use craft_tools::{OutStream, ToolCtx, ToolEvent};
 use futures::StreamExt;
 
@@ -115,6 +115,12 @@ async fn execute_one(
     sink: &mut (dyn FnMut(RuntimeEvent) + Send),
 ) -> (String, bool) {
     let args = parse_args(call);
+    if let Some(raw) = salvaged_arguments(&args) {
+        return (
+            format!("tool arguments were not valid JSON; the call was not executed: {raw}"),
+            true,
+        );
+    }
     let mut stream = registry.execute(&call.name, args, ctx);
     while let Some(item) = stream.next().await {
         match item {
@@ -144,6 +150,17 @@ fn parse_args(call: &ToolCall) -> serde_json::Value {
     serde_json::from_str(trimmed).unwrap_or_else(|_| {
         serde_json::Value::String(format!("invalid tool arguments JSON: {}", call.arguments))
     })
+}
+
+/// The salvage marker the fold leaves in place of malformed arguments:
+/// exactly one key carrying the raw fragment. The call never reaches
+/// the registry; the model sees the error and self-corrects next turn.
+fn salvaged_arguments(args: &serde_json::Value) -> Option<&str> {
+    let object = args.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    object.get(INVALID_TOOL_ARGUMENTS_KEY)?.as_str()
 }
 
 fn stream_name(stream: OutStream) -> ToolStreamName {

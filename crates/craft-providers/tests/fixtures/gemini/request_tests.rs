@@ -202,8 +202,8 @@ async fn unpaired_tool_result_is_rejected_before_the_wire() -> Result<(), TestEr
 }
 
 #[tokio::test]
-async fn malformed_arguments_are_rejected_before_the_wire() -> Result<(), TestError> {
-    let server = MockServer::start(Vec::new(), "").await?;
+async fn malformed_arguments_ride_the_salvage_marker_to_the_wire() -> Result<(), TestError> {
+    let server = serve_stream().await?;
     let mut request = sample_request();
     request.messages = vec![std::sync::Arc::new(ChatMessage::Assistant {
         text: String::new(),
@@ -211,13 +211,12 @@ async fn malformed_arguments_are_rejected_before_the_wire() -> Result<(), TestEr
         native_blocks: None,
     })];
     let events = run(&provider(&server.base_url)?, request).await;
-    assert_eq!(server.request_count(), 0);
-    assert!(
-        matches!(
-            events.first(),
-            Some(Err(ProviderError::InvalidRequest { .. }))
-        ),
-        "tool arguments that are not a JSON object fail typed: {events:?}"
+    assert!(!events.is_empty());
+    let body = captured_body(server.request(0).ok_or("a request")?.body).await?;
+    assert_eq!(
+        body["contents"][0]["parts"][0]["functionCall"]["args"],
+        serde_json::json!({"invalid_tool_arguments": "{\"cmd\""}),
+        "malformed history arguments ride the salvage marker, never failing request building"
     );
     Ok(())
 }

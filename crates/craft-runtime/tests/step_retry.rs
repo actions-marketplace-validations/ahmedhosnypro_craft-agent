@@ -14,6 +14,8 @@
 //!      stays charged to the run
 //!   7  a filtered empty turn fails without one replay
 //!   8  the budget guard wins over a replay: exit 3, never a loop
+//!   9  a stream that ends at EOF without the terminal event replays
+//!      on the same ladder
 //!
 //! The CRAFT_AGENT_STEP_RETRIES knob rows live in step_retry_knob.rs.
 
@@ -314,6 +316,36 @@ async fn idle_stalls_replay_on_the_same_ladder() {
     assert_eq!(outcome.exit_code(), 0);
     assert_eq!(provider.requests().len(), 3);
     assert_two_retries(&events, "idle_timeout");
+}
+
+/// A stream that ends cleanly at EOF without the terminal event is a
+/// mid-stream death: the fold reports it unfinished and the ladder
+/// replays the step from the intact transcript.
+#[tokio::test(start_paused = true)]
+async fn an_unfinished_stream_replays_on_the_step_ladder() {
+    let provider = FakeProvider::new(vec![
+        unfinished_turn("partial"),
+        text_turn("done", StopReason::EndTurn, usage(2, 1)),
+    ]);
+    let runner = Runner::new(
+        provider.clone(),
+        registry_with_ok("scripted", "x"),
+        config(3),
+    );
+    let (outcome, events) = run_collect(&runner, "go").await;
+
+    assert_eq!(outcome.exit_code(), 0);
+    assert_eq!(outcome.turns, 1);
+    assert_eq!(outcome.usage.input_tokens, 2);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    let transcript = wire(&requests, 0);
+    assert_eq!(
+        wire(&requests, 1),
+        transcript,
+        "the replay resends the intact transcript"
+    );
+    assert_single_retry(&events, "stream_closed");
 }
 
 /// A tool-call header with no name: the fold fails closed at finish.

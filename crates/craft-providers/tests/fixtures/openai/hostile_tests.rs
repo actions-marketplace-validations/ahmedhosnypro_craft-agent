@@ -1,6 +1,6 @@
 //! Hostile rows: truncated chunks, invalid UTF-8, corrupt ordering, and
 //! mid-stream error envelopes map to typed errors, never panics, and
-//! hostile tool fragments fail closed in the fold.
+//! malformed tool arguments salvage in the fold.
 
 use crate::mock::{CannedResponse, MockServer};
 use crate::wire;
@@ -10,7 +10,7 @@ use crate::{
 };
 use craft_core::error::ProviderError;
 use craft_core::events::{FoldError, ModelEvent, TurnCaps};
-use craft_core::types::Usage;
+use craft_core::types::{Usage, salvage_arguments};
 
 async fn serve(body: &[u8]) -> Result<MockServer, TestError> {
     let server = MockServer::start(vec![CannedResponse::sse(body)], "/v1").await?;
@@ -142,13 +142,15 @@ async fn duplicate_tool_indices_fail_in_the_fold() -> Result<(), TestError> {
 }
 
 #[tokio::test]
-async fn malformed_tool_arguments_fail_in_the_fold() -> Result<(), TestError> {
+async fn malformed_tool_arguments_salvage_in_the_fold() -> Result<(), TestError> {
     let events = events_over(wire::bad_arguments_stream().as_bytes()).await?;
-    assert_eq!(
-        fold(&events)?,
-        Err(FoldError::InvalidArguments { index: 0 }),
-        "concatenated fragments that are not JSON fail closed"
-    );
+    let turn = crate::folded(&events)?;
+    let call = turn
+        .tool_calls
+        .first()
+        .ok_or("the salvaged call rides the turn")?;
+    assert_eq!(call.name, "lookup");
+    assert_eq!(call.arguments, salvage_arguments("{\"city\":Paris"));
     Ok(())
 }
 

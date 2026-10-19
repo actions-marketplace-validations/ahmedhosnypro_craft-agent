@@ -179,28 +179,36 @@ async fn the_child_registry_filters_at_the_request_seam() {
     );
 }
 
-/// Malformed tool-call JSON never even reaches the tool: the wire
-/// fold rejects it and the run ends typed, exit 1.
+/// Malformed tool-call JSON survives the run: the fold salvages the
+/// call and the call layer refuses it as an is_error result the model
+/// can act on — nothing launches, the run continues.
 #[tokio::test]
-async fn malformed_tool_json_is_typed_at_the_fold_seam() {
-    let provider = subagent_common::FakeProvider::new(vec![tool_reply(
-        "c1",
-        "spawn_agent",
-        "not json at all",
-        usage(10, 5),
-    )]);
+async fn malformed_tool_json_survives_as_tool_error_feedback() {
+    let provider = subagent_common::FakeProvider::new(vec![
+        tool_reply("c1", "spawn_agent", "not json at all", usage(10, 5)),
+        text_reply("parent done", usage(10, 5)),
+    ]);
     let rig = subagent_common::rig(
         subagent_common::RigSpec::memory("hostile-json", 100_000),
         provider.clone(),
         vec![subagent_common::scout()],
     );
     let (config, registry) = subagent_common::parent_run(&rig, 20);
-    let (outcome, _) = subagent_common::run(config, registry, provider, "Drive the run.").await;
-    assert_eq!(outcome.exit, ExitStatus::Error);
+    let (outcome, events) =
+        subagent_common::run(config, registry, provider, "Drive the run.").await;
+    assert_eq!(outcome.exit, ExitStatus::Ok, "{:?}", outcome.detail);
     assert!(
-        outcome.detail.contains("not valid JSON"),
-        "the typed detail: {}",
-        outcome.detail
+        subagent_common::started(&events).is_empty(),
+        "nothing launched"
+    );
+    let results = subagent_common::tool_results(&events);
+    assert!(results[0].0, "the refusal is an is_error result");
+    assert!(
+        results[0].1.contains(
+            "tool arguments were not valid JSON; the call was not executed: not json at all"
+        ),
+        "the feedback names the raw arguments: {}",
+        results[0].1
     );
 }
 

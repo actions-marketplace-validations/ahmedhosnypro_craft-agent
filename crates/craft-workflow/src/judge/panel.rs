@@ -138,7 +138,7 @@ async fn repair_seats<E: StepExecutor + Sync>(
     executor: &E,
     base: &StepInputs,
     total: u32,
-    outcomes: &mut Vec<Result<StepOutcome, WorkflowError>>,
+    outcomes: &mut [Result<StepOutcome, WorkflowError>],
 ) {
     for _ in 0..MAX_SEAT_REPAIRS {
         let unparsed: Vec<(usize, String)> = outcomes

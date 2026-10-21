@@ -3,6 +3,7 @@
 // verdicts to be malformed the way a model can produce them — the loop
 // must re-run the seat until the verdict parses, with a real verdict
 // settling the gate. Runs via `just integration_workflow_judge`.
+#![allow(clippy::unwrap_used)]
 
 #[path = "../../craft-providers/tests/byok_env.rs"]
 mod byok_env;

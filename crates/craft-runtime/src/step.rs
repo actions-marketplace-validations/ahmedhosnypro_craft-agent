@@ -35,7 +35,7 @@ pub(crate) struct StepCtx<'a, P> {
     pub(crate) provider: &'a P,
     pub(crate) idle_timeout: Option<Duration>,
     pub(crate) turn_caps: TurnCaps,
-    pub(crate) max_total_tokens: u64,
+    pub(crate) max_total_tokens: Option<u64>,
 }
 
 impl<P: Provider + Send + Sync> StepCtx<'_, P> {

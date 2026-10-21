@@ -16,7 +16,10 @@ use subagent_common::{Reply, delayed, text_reply, tool_reply, usage};
 
 /// One admission's batch shape, in compact call form.
 fn batch(slice: u64, count: u32) -> AdmitBatch {
-    AdmitBatch { slice, count }
+    AdmitBatch {
+        slice: Some(slice),
+        count,
+    }
 }
 
 #[tokio::test]

@@ -30,8 +30,9 @@ pub struct RunConfig {
     pub system: Option<String>,
     /// Model turns allowed before the run fails closed (exit 2).
     pub max_turns: u32,
-    /// Total token spend allowed across the run (exit 3).
-    pub max_total_tokens: u64,
+    /// Total token spend allowed across the run (exit 3); None is
+    /// unlimited.
+    pub max_total_tokens: Option<u64>,
     /// Per-request output cap forwarded to the provider.
     pub max_tokens: u32,
     /// Total attempts per model step after a mid-stream death; None
@@ -72,7 +73,7 @@ impl RunConfig {
         Self {
             system: None,
             max_turns: 40,
-            max_total_tokens: 4_000_000,
+            max_total_tokens: Some(4_000_000),
             max_tokens: DEFAULT_REQUEST_TOKENS,
             step_attempts: None,
             result_window_turns: None,

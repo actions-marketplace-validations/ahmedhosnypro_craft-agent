@@ -102,7 +102,7 @@ fn executor(
         "base-model".to_string(),
         rig.workspace.clone(),
         rig.run_dir.join("sessions"),
-        rig.plan.limits.max_total_tokens,
+        Some(rig.plan.limits.max_total_tokens),
         None,
         Some(3),
         agents,

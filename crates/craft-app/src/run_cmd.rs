@@ -53,7 +53,7 @@ pub fn execute_run(run: RunCli) -> Result<i32, AppError> {
 /// The two caps the summary table reports next to the run counts.
 struct RunCaps {
     turn_cap: u32,
-    token_budget: u64,
+    token_budget: Option<u64>,
 }
 
 /// A mounted run ready to drive: the runner, the prompt it runs, the
@@ -188,7 +188,7 @@ fn execute_run_inner(run: RunCli, redactor: &Arc<craft_redact::Redactor>) -> Res
             model: config.model.clone(),
             provider: summary::provider_name(config.provider).to_string(),
             turn_cap: Some(caps.turn_cap),
-            token_budget: Some(caps.token_budget),
+            token_budget: caps.token_budget,
             rows: redaction::summary_rows(redactor),
         },
     );

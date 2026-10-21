@@ -116,7 +116,7 @@ pub enum RuntimeEvent {
         id: String,
         profile: String,
         max_turns: u32,
-        max_tokens: u64,
+        max_tokens: Option<u64>,
         timeout_secs: Option<u64>,
     },
     /// A subagent settled: its stop reason from the run taxonomy,

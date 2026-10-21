@@ -27,7 +27,7 @@ pub type StepMount<P> = Arc<dyn Fn(&str) -> Result<Arc<P>, String> + Send + Sync
 struct StepKnobs {
     workspace_root: PathBuf,
     sessions_dir: PathBuf,
-    step_token_cap: u64,
+    step_token_cap: Option<u64>,
     idle_timeout: Option<Duration>,
     step_attempts: Option<u32>,
 }
@@ -48,7 +48,7 @@ impl<P: Provider + Send + Sync> WorkflowExecutor<P> {
         default_model: String,
         workspace_root: PathBuf,
         sessions_dir: PathBuf,
-        step_token_cap: u64,
+        step_token_cap: Option<u64>,
         idle_timeout: Option<Duration>,
         step_attempts: Option<u32>,
         agents: BTreeMap<String, AgentFile>,

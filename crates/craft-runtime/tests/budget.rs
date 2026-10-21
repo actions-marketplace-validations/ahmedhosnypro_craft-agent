@@ -12,7 +12,7 @@ use craft_runtime::{CancelCategory, RunConfig, RunOutcome, Runner, RuntimeEvent}
 fn limited(max_turns: u32, max_total_tokens: u64) -> RunConfig {
     let mut cfg = RunConfig::new(std::path::PathBuf::from("."));
     cfg.max_turns = max_turns;
-    cfg.max_total_tokens = max_total_tokens;
+    cfg.max_total_tokens = Some(max_total_tokens);
     cfg
 }
 

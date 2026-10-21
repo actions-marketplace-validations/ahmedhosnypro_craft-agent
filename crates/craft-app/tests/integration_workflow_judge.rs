@@ -164,7 +164,7 @@ async fn a_seat_repairs_until_the_verdict_parses_over_the_live_gateway() -> Resu
         model.clone(),
         workspace.clone(),
         sessions,
-        2_000_000,
+        Some(2_000_000),
         None,
         None::<u32>,
         agents,

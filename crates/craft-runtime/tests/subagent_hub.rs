@@ -67,7 +67,14 @@ fn bare_hub() -> Arc<SubagentHub> {
 
 /// One admission's batch shape, in compact call form.
 fn batch(slice: u64, count: u32) -> AdmitBatch {
-    AdmitBatch { slice, count }
+    AdmitBatch {
+        slice: Some(slice),
+        count,
+    }
+}
+
+fn unlimited_batch(count: u32) -> AdmitBatch {
+    AdmitBatch { slice: None, count }
 }
 
 #[test]
@@ -152,6 +159,26 @@ fn batch_slices_reserve_jointly() {
         hub.admit(0, batch(300, 1), "repo-scout")
             .unwrap_err()
             .starts_with("token budget:")
+    );
+}
+
+#[test]
+fn unlimited_members_admit_past_a_tight_token_cap() {
+    let provider = FakeProvider::new(vec![Reply::Events(Vec::new())]);
+    let tight = rig(
+        RigSpec::memory("hub-unlimited", 1_000),
+        provider,
+        vec![scout()],
+    );
+    let hub = &tight.hub;
+    let ids = hub
+        .admit(0, unlimited_batch(4), "repo-scout")
+        .expect("unlimited members reserve nothing");
+    assert_eq!(ids.len(), 4);
+    let remaining = hub.settle(&ids[0], &report(50));
+    assert_eq!(
+        remaining, 950,
+        "real spend still prices against the cap: {remaining}"
     );
 }
 

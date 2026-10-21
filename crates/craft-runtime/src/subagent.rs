@@ -88,7 +88,7 @@ impl CapSpec {
         knob: ENV_MAX_TOTAL,
         default: 32,
         min: 1,
-        max: 256,
+        max: 1024,
     };
     const CONCURRENCY: Self = Self {
         knob: ENV_MAX_CONCURRENCY,

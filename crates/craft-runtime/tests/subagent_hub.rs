@@ -42,8 +42,15 @@ fn hostile_cap_knobs_are_typed_errors() {
         );
     }
     assert!(SubagentCaps::resolve(None, Some("0".into()), None).is_err());
+    assert!(SubagentCaps::resolve(None, Some("1025".into()), None).is_err());
     assert!(SubagentCaps::resolve(None, None, Some("1025".into())).is_err());
     assert!(SubagentCaps::resolve(Some("5".into()), None, None).is_err());
+    assert_eq!(
+        SubagentCaps::resolve(None, Some("1024".into()), None)
+            .unwrap()
+            .max_total,
+        1024
+    );
     assert_eq!(
         SubagentCaps::resolve(Some("0".into()), None, None)
             .unwrap()

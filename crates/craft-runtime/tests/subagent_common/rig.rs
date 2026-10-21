@@ -38,6 +38,8 @@ fn profile(
         prompt_mode: PromptMode::Full,
         tools: tools.map(|list| list.into_iter().map(str::to_string).collect()),
         disallowed_tools: Vec::new(),
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
         max_turns: None,
         timeout_secs,
         background: false,

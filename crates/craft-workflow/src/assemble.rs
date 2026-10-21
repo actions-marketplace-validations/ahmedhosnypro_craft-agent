@@ -13,6 +13,16 @@ pub struct StepInputs {
     pub agent: String,
     pub model: Option<String>,
     pub max_turns: u32,
+    /// Seat index for judge panel members, None for plain steps; the
+    /// suffix keeps each seat's session file distinct.
+    pub seat: Option<u32>,
+    /// Judge feedback issues the engine appended to the producer's
+    /// prompt for this attempt.
+    pub feedback: Vec<String>,
+    /// Engine-enforced read denials, workspace-relative globs.
+    pub deny_read: Vec<String>,
+    /// Engine-enforced write denials, workspace-relative globs.
+    pub deny_write: Vec<String>,
     pub prompt: String,
 }
 
@@ -25,12 +35,14 @@ impl StepInputs {
 }
 
 /// Builds the step's prompt from settled dependency previews only — no step
-/// reads another's output mid-wave.
+/// reads another's output mid-wave. Feedback appends the judge's issues
+/// to the producer's prompt for a repair attempt.
 pub fn assemble_step(
     plan: &WorkflowPlan,
     args: &BTreeMap<String, ArgValue>,
     step: &StepSpec,
     dep_previews: &BTreeMap<String, String>,
+    feedback: &[String],
 ) -> StepInputs {
     let mut prompt = String::new();
     if !plan.shared_body.is_empty() {
@@ -50,11 +62,21 @@ pub fn assemble_step(
             prompt.push('\n');
         }
     }
+    if !feedback.is_empty() {
+        prompt.push_str("\n\n## Judge feedback\n\n");
+        prompt.push_str("A judge rejected your previous attempt and returned these issues. Address every one.\n\n");
+        prompt.push_str(&feedback.join("\n\n"));
+        prompt.push('\n');
+    }
     StepInputs {
         id: step.id.clone(),
         agent: step.agent.clone(),
         model: step.model.clone(),
         max_turns: step.max_turns,
+        seat: None,
+        feedback: feedback.to_vec(),
+        deny_read: step.deny_read.clone(),
+        deny_write: step.deny_write.clone(),
         prompt,
     }
 }

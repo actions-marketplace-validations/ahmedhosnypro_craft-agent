@@ -47,6 +47,14 @@ impl ReadFileTool {
                 reason,
             });
         }
+        if let Some(glob) = ctx.denies_read(&abs) {
+            return Err(crate::scope::denial(
+                "read_file",
+                &display(&abs),
+                &glob,
+                "read",
+            ));
+        }
         let mut roots = vec![ctx.workspace_root().to_path_buf()];
         roots.extend(ctx.read_roots().iter().cloned());
         let file = open_guarded(&abs, &roots, GuardedOpen::Read, "read")?;

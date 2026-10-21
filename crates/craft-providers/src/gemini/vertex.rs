@@ -20,16 +20,53 @@ use crate::transport;
 const GLOBAL_HOST: &str = "aiplatform.googleapis.com";
 const HOST_SUFFIX: &str = "-aiplatform.googleapis.com";
 
+/// The project-scoped coordinates one Vertex lane mounts over: the
+/// project, the location, the publisher model, and the service endpoint
+/// they ride.
+struct Mount {
+    project: String,
+    location: String,
+    model: String,
+    base_url: String,
+}
+
+impl Mount {
+    /// The mount coordinates: the trailing slash trimmed off the
+    /// endpoint so the documented stream URL never doubles its slash.
+    fn at(project: &str, location: &str, model: &str, base_url: &str) -> Self {
+        Self {
+            project: project.to_owned(),
+            location: location.to_owned(),
+            model: model.to_owned(),
+            base_url: base_url.trim_end_matches('/').to_owned(),
+        }
+    }
+
+    /// A mount-time guard: project, location, and model must carry real
+    /// values, or the failure names the empty part before any wire bytes.
+    fn reject_empty(&self) -> Result<(), ProviderError> {
+        for (part, value) in [
+            ("project", self.project.as_str()),
+            ("location", self.location.as_str()),
+            ("model", self.model.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ProviderError::InvalidRequest {
+                    detail: format!("vertex {part} must not be empty"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The generateContent dialect mounted over one Vertex project,
 /// location, and model, authenticating with the ADC bearer instead of
 /// the Gemini API key. The token source rides boxed: it carries the
 /// credential's signing key.
 pub struct VertexProvider {
     client: reqwest::Client,
-    base_url: String,
-    project: String,
-    location: String,
-    model: String,
+    mount: Mount,
     sse: craft_core::sse::SseOptions,
     tokens: tokio::sync::OnceCell<Box<TokenSource>>,
 }
@@ -39,10 +76,7 @@ impl VertexProvider {
     /// and the ADC credential, resolved once on the first request.
     pub fn new(project: &str, location: &str, model: &str) -> Result<Self, ProviderError> {
         Self::mounted(
-            project,
-            location,
-            model,
-            &endpoint_url(location),
+            Mount::at(project, location, model, &endpoint_url(location)),
             tokio::sync::OnceCell::new(),
         )
     }
@@ -57,30 +91,19 @@ impl VertexProvider {
         base_url: &str,
     ) -> Result<Self, ProviderError> {
         Self::mounted(
-            project,
-            location,
-            model,
-            base_url,
+            Mount::at(project, location, model, base_url),
             tokio::sync::OnceCell::from(Box::new(tokens)),
         )
     }
 
     fn mounted(
-        project: &str,
-        location: &str,
-        model: &str,
-        base_url: &str,
+        mount: Mount,
         tokens: tokio::sync::OnceCell<Box<TokenSource>>,
     ) -> Result<Self, ProviderError> {
-        reject_empty("project", project)?;
-        reject_empty("location", location)?;
-        reject_empty("model", model)?;
+        mount.reject_empty()?;
         Ok(Self {
             client: transport::client()?,
-            base_url: base_url.trim_end_matches('/').to_owned(),
-            project: project.to_owned(),
-            location: location.to_owned(),
-            model: model.to_owned(),
+            mount,
             sse: craft_core::sse::SseOptions::default(),
             tokens,
         })
@@ -99,7 +122,7 @@ impl VertexProvider {
     fn stream_url(&self) -> String {
         format!(
             "{}/v1/projects/{}/locations/{}/publishers/google/models/{}:streamGenerateContent?alt=sse",
-            self.base_url, self.project, self.location, self.model
+            self.mount.base_url, self.mount.project, self.mount.location, self.mount.model
         )
     }
 
@@ -119,7 +142,7 @@ impl VertexProvider {
     /// Sends one streaming request on the shared ladder, mounted over
     /// this dialect's URL, bearer header, and payload.
     async fn connect(&self, request: &ModelRequest) -> Result<reqwest::Response, ProviderError> {
-        let body = request::encode(request, &self.model)?;
+        let body = request::encode(request, &self.mount.model)?;
         let payload =
             serde_json::to_string(&body).map_err(|err| ProviderError::InvalidRequest {
                 detail: err.to_string(),
@@ -158,15 +181,4 @@ pub fn endpoint_url(location: &str) -> String {
         format!("{location}{HOST_SUFFIX}")
     };
     format!("https://{host}")
-}
-
-/// A mount-time guard: project, location, and model must carry real
-/// values, or the failure names the empty part before any wire bytes.
-fn reject_empty(part: &str, value: &str) -> Result<(), ProviderError> {
-    if value.trim().is_empty() {
-        return Err(ProviderError::InvalidRequest {
-            detail: format!("vertex {part} must not be empty"),
-        });
-    }
-    Ok(())
 }

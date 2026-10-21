@@ -11,7 +11,8 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use crate::assemble::{assemble_step, previews_for};
 use crate::error::WorkflowError;
 use crate::journal::{Journal, JournalEvent};
-use crate::plan::{ArgValue, OnFailure, PREVIEW_CHARS, StepSpec, WorkflowPlan};
+use crate::judge;
+use crate::plan::{ArgValue, StepSpec, WorkflowPlan};
 use crate::status::{
     RunConclusion, SkipReason, StepConclusion, StepStatus, StepUsage, WorkflowReport,
 };
@@ -78,9 +79,19 @@ pub(crate) async fn drive<E: StepExecutor + Sync>(
             outcome,
             usage: StepUsage::default(),
         };
-        settle(plan, &mut state, journal, done)?;
+        let spec = spec_of(plan, &done.id)?;
+        settle(SettleStep { plan, spec }, &mut state, journal, done)?;
     }
     finish(plan, &mut state, journal, run_id)
+}
+
+fn spec_of<'a>(
+    plan: &'a WorkflowPlan,
+    id: &str,
+) -> Result<&'a crate::plan::StepSpec, WorkflowError> {
+    plan.step(id).ok_or_else(|| WorkflowError::Internal {
+        detail: format!("settling step `{id}` is not in the plan"),
+    })
 }
 
 fn admit<'a, E: StepExecutor + Sync>(
@@ -107,7 +118,7 @@ fn admit<'a, E: StepExecutor + Sync>(
             continue;
         }
         let previews = previews_for(spec, |need| state.settled_preview(need));
-        let inputs = assemble_step(plan, args, spec, &previews);
+        let inputs = assemble_step(plan, args, spec, &previews, &state.feedback_text(&id));
         journal.record(JournalEvent::StepStarted {
             seq: journal.next_seq(),
             id: id.clone(),
@@ -119,7 +130,13 @@ fn admit<'a, E: StepExecutor + Sync>(
         state.input_hashes.insert(id.clone(), inputs.input_hash());
         state.slots.insert(id.clone(), Slot::Running);
         let task = id.clone();
-        let call = executor.execute(inputs);
+        let call: Pin<Box<dyn Future<Output = Result<StepOutcome, WorkflowError>> + Send + 'a>> =
+            match &spec.judge {
+                Some(judge) if spec.is_judge() => {
+                    Box::pin(judge::run_panel(executor, inputs, judge))
+                }
+                _ => Box::pin(executor.execute(inputs)),
+            };
         in_flight.push(Box::pin(async move {
             let result = call.await;
             (task, result)
@@ -130,128 +147,34 @@ fn admit<'a, E: StepExecutor + Sync>(
 
 /// One attempt handed back by a flight: the step, its terminal outcome,
 /// and the step's usage total across attempts so far.
-struct Completion {
-    id: String,
-    outcome: StepOutcome,
-    usage: StepUsage,
+pub(crate) struct Completion {
+    pub(crate) id: String,
+    pub(crate) outcome: StepOutcome,
+    pub(crate) usage: StepUsage,
 }
 
-fn settle(
-    plan: &WorkflowPlan,
+/// One step in its plan: what an attempt settles against.
+pub(crate) struct SettleStep<'a> {
+    pub(crate) plan: &'a WorkflowPlan,
+    pub(crate) spec: &'a StepSpec,
+}
+
+/// A passed verdict settles success and releases dependants; a failed
+/// verdict settles under the judge's policy. Both live in `settle`.
+pub(crate) fn settle(
+    step: SettleStep<'_>,
     state: &mut EngineState,
     journal: &mut Journal,
     mut done: Completion,
 ) -> Result<(), WorkflowError> {
-    let Some(spec) = plan.step(&done.id) else {
-        return Err(WorkflowError::Internal {
-            detail: format!("settling step `{}` is not in the plan", done.id),
-        });
-    };
-    done.usage = charge_attempt(state, spec, &done);
-    if queue_retry(plan, state, journal, &done)? {
+    done.usage = crate::settle::charge_attempt(state, step.spec, &done);
+    if step.spec.is_judge() && judge::is_verdict_message(&done.outcome.final_message) {
+        return judge::settle_verdict(state, journal, step.spec, &done);
+    }
+    if crate::settle::queue_retry(step.plan, state, journal, &done)? {
         Ok(())
     } else {
-        settle_done(state, journal, spec, &done)
-    }
-}
-
-/// A failed attempt requeues the step while retries and pool budget
-/// remain; false means the outcome must settle instead.
-fn queue_retry(
-    plan: &WorkflowPlan,
-    state: &mut EngineState,
-    journal: &mut Journal,
-    done: &Completion,
-) -> Result<bool, WorkflowError> {
-    let attempt = *state.attempts.get(&done.id).unwrap_or(&0);
-    let Some(spec) = plan.step(&done.id) else {
-        return Ok(false);
-    };
-    let max_attempts = 1u32 + spec.retry.min(plan.limits.max_retries_per_step);
-    let retries_left = attempt + 1 < max_attempts;
-    let failed = !done.outcome.conclusion.is_success();
-    let allowed = failed && retries_left && !state.stopping && state.pool.check(spec).is_ok();
-    if allowed {
-        state.attempts.insert(done.id.clone(), attempt + 1);
-        journal.record(JournalEvent::StepRetried {
-            seq: journal.next_seq(),
-            id: done.id.clone(),
-            attempt: attempt + 1,
-        })?;
-        state.slots.insert(done.id.clone(), Slot::Pending);
-        state.ready.push_back(done.id.clone());
-    }
-    Ok(allowed)
-}
-
-/// Every attempt is charged to the pool as it lands; the settled row
-/// carries the step's total across attempts.
-fn charge_attempt(state: &mut EngineState, spec: &StepSpec, done: &Completion) -> StepUsage {
-    state.total_usage = state.total_usage.saturating_add(done.outcome.usage);
-    state.pool.release(u64::from(spec.max_turns));
-    state.pool.settle(done.outcome.usage);
-    let entry = state.attempt_usage.entry(done.id.clone()).or_default();
-    *entry = entry.saturating_add(done.outcome.usage);
-    *entry
-}
-
-fn settle_done(
-    state: &mut EngineState,
-    journal: &mut Journal,
-    spec: &StepSpec,
-    done: &Completion,
-) -> Result<(), WorkflowError> {
-    let preview = truncate_chars(&done.outcome.final_message, PREVIEW_CHARS);
-    let Some(input_hash) = state.input_hashes.get(&done.id) else {
-        return Err(WorkflowError::Internal {
-            detail: format!("step `{}` settled without an input hash", done.id),
-        });
-    };
-    journal.record(JournalEvent::StepFinished {
-        seq: journal.next_seq(),
-        id: done.id.clone(),
-        input_hash: input_hash.clone(),
-        conclusion: done.outcome.conclusion,
-        usage: done.usage,
-        final_message: preview.clone(),
-    })?;
-    state.attempt_usage.remove(&done.id);
-    state.slots.insert(
-        done.id.clone(),
-        Slot::Done(StepStatus::Settled {
-            conclusion: done.outcome.conclusion,
-            usage: done.usage,
-            final_message: preview,
-        }),
-    );
-    if done.outcome.conclusion.is_success() {
-        unlock_dependants(state, spec);
-    } else {
-        note_failure(state, &done.id, spec, done.outcome.conclusion);
-    }
-    Ok(())
-}
-
-/// A successful settle releases the dependants whose needs are now met.
-fn unlock_dependants(state: &mut EngineState, spec: &StepSpec) {
-    for dependent in &spec.dependants {
-        let Some(unmet) = state.unmet.get_mut(dependent) else {
-            continue;
-        };
-        *unmet = unmet.saturating_sub(1);
-        let pending = matches!(state.slots.get(dependent), Some(Slot::Pending));
-        if *unmet == 0 && pending {
-            state.ready.push_back(dependent.clone());
-        }
-    }
-}
-
-fn note_failure(state: &mut EngineState, id: &str, spec: &StepSpec, conclusion: StepConclusion) {
-    if state.first_failure.is_none() {
-        state.first_failure = Some((id.to_string(), conclusion));
-    }
-    if spec.on_failure == OnFailure::Stop {
-        state.stopping = true;
+        crate::settle::settle_done(state, journal, step.spec, &done)
     }
 }
 

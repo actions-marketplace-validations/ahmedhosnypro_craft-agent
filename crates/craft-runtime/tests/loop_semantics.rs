@@ -27,12 +27,128 @@ mod common;
 
 use common::*;
 use craft_core::types::{ChatMessage, StopReason};
-use craft_runtime::{CancelCategory, RunConfig, Runner};
+use craft_runtime::{CancelCategory, RunConfig, RunOutcome, Runner};
 
 fn config() -> RunConfig {
     let mut config = RunConfig::new(std::path::PathBuf::from("."));
     config.step_attempts = Some(1);
     config
+}
+
+/// One transcript message that is an assistant turn requesting exactly
+/// one tool call.
+fn is_one_tool_call(message: &std::sync::Arc<ChatMessage>) -> bool {
+    matches!(
+        message.as_ref(),
+        ChatMessage::Assistant { tool_calls, .. } if tool_calls.len() == 1
+    )
+}
+
+/// The transcript messages of the request at `index`.
+fn request_messages(provider: &FakeProvider, index: usize) -> Vec<std::sync::Arc<ChatMessage>> {
+    provider.requests()[index].messages.clone()
+}
+
+/// One transcript message that is a tool result for `call_id`, carrying
+/// `output` and no error flag.
+fn is_tool_result_of(message: &std::sync::Arc<ChatMessage>, call_id: &str, output: &str) -> bool {
+    matches!(message.as_ref(), ChatMessage::Tool {
+        call_id: id, is_error, content, ..
+    } if id == call_id && !*is_error && content == output)
+}
+
+/// One transcript message that is an error tool result.
+fn is_tool_error(message: &std::sync::Arc<ChatMessage>) -> bool {
+    matches!(message.as_ref(), ChatMessage::Tool { is_error, .. } if *is_error)
+}
+
+/// One transcript message that is an error tool result naming `needle`.
+fn is_tool_error_naming(message: &std::sync::Arc<ChatMessage>, needle: &str) -> bool {
+    matches!(message.as_ref(), ChatMessage::Tool { is_error, content, .. }
+        if *is_error && content.contains(needle))
+}
+
+/// A non-error tool result carrying `output` anywhere in the stream.
+fn saw_tool_result(events: &[craft_runtime::RuntimeEvent], output: &str) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            craft_runtime::RuntimeEvent::ToolResult { is_error, content, .. }
+            if !*is_error && content == output
+        )
+    })
+}
+
+/// An error tool result anywhere in the stream.
+fn saw_tool_error(events: &[craft_runtime::RuntimeEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            craft_runtime::RuntimeEvent::ToolResult { is_error, .. } if *is_error
+        )
+    })
+}
+
+/// Every tool result the stream carried: (is_error, content).
+fn tool_results(events: &[craft_runtime::RuntimeEvent]) -> Vec<(bool, String)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            craft_runtime::RuntimeEvent::ToolResult {
+                is_error, content, ..
+            } => Some((*is_error, content.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the run finished with this exit code and category.
+fn is_finished_with(
+    events: &[craft_runtime::RuntimeEvent],
+    exit_code: i32,
+    category: CancelCategory,
+) -> bool {
+    matches!(events.last(),
+        Some(craft_runtime::RuntimeEvent::RunFinished { exit_code: code, category: seen, .. })
+        if *code == exit_code && *seen == category)
+}
+
+/// Asserts the run completed after `turns` turns.
+fn assert_completed(outcome: &RunOutcome, turns: u32) {
+    assert_eq!(outcome.exit_code(), 0);
+    assert_eq!(outcome.category, CancelCategory::Completed);
+    assert_eq!(outcome.turns, turns);
+}
+
+/// Asserts the run's charged usage is exactly this and complete.
+fn assert_usage(outcome: &RunOutcome, input: u64, output: u64) {
+    assert_eq!(outcome.usage.input_tokens, input);
+    assert_eq!(outcome.usage.output_tokens, output);
+    assert!(!outcome.usage.incomplete);
+}
+
+/// Asserts the request at `index` replays the tool call with its result.
+fn assert_result_replayed(provider: &FakeProvider, index: usize, call_id: &str, output: &str) {
+    let messages = request_messages(provider, index);
+    assert_eq!(messages.len(), 3);
+    assert!(is_one_tool_call(&messages[1]));
+    assert!(is_tool_result_of(&messages[2], call_id, output));
+}
+
+/// Asserts the run aborted as a plain error naming `needle`.
+fn assert_error_abort(outcome: &RunOutcome, needle: &str) {
+    assert_eq!(outcome.exit_code(), 1);
+    assert_eq!(outcome.category, CancelCategory::Error);
+    assert!(outcome.detail.contains(needle));
+}
+
+/// Asserts the only tool result is the salvage feedback naming `fragment`.
+fn assert_salvage_feedback(results: &[(bool, String)], fragment: &str) {
+    assert_eq!(results.len(), 1, "one tool result");
+    assert!(results[0].0, "the marker call is an is_error result");
+    let expected =
+        format!("tool arguments were not valid JSON; the call was not executed: {fragment}");
+    assert_eq!(results[0].1, expected);
 }
 
 #[tokio::test]
@@ -48,36 +164,17 @@ async fn tool_round_trip_feeds_result_back_and_finishes() {
     );
     let (outcome, events) = run_collect(&runner, "use the tool").await;
 
-    assert_eq!(outcome.exit_code(), 0);
-    assert_eq!(outcome.category, CancelCategory::Completed);
-    assert_eq!(outcome.turns, 2);
-    assert_eq!(outcome.usage.input_tokens, 14);
-    assert_eq!(outcome.usage.output_tokens, 7);
-    assert!(!outcome.usage.incomplete);
+    assert_completed(&outcome, 2);
+    assert_usage(&outcome, 14, 7);
 
     // The tool result went back to the model on the next request.
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
-    let second = &requests[1].messages;
-    assert_eq!(second.len(), 3);
-    assert!(matches!(second[1].as_ref(), ChatMessage::Assistant {
-        tool_calls, ..
-    } if tool_calls.len() == 1));
-    assert!(matches!(second[2].as_ref(), ChatMessage::Tool {
-        call_id, is_error, content, ..
-    } if call_id == "call-1" && !*is_error && content == "tool output"));
+    assert_result_replayed(&provider, 1, "call-1", "tool output");
 
     // Stream-json saw the tool call, the result, and a clean finish.
-    assert!(events.iter().any(|e| matches!(
-        e,
-        craft_runtime::RuntimeEvent::ToolResult { is_error, content, .. }
-        if !*is_error && content == "tool output"
-    )));
-    assert!(matches!(
-        events.last(),
-        Some(craft_runtime::RuntimeEvent::RunFinished { exit_code, .. })
-        if *exit_code == 0
-    ));
+    assert!(saw_tool_result(&events, "tool output"));
+    assert!(is_finished_with(&events, 0, CancelCategory::Completed));
 }
 
 #[tokio::test]
@@ -97,15 +194,11 @@ async fn tool_error_round_trips_as_is_error_tool_result() {
 
     assert_eq!(outcome.exit_code(), 0);
     let requests = provider.requests();
-    assert!(
-        matches!(requests[1].messages[2].as_ref(), ChatMessage::Tool {
-        is_error, content, ..
-    } if *is_error && content.contains("file not found"))
-    );
-    assert!(events.iter().any(|e| matches!(
-        e,
-        craft_runtime::RuntimeEvent::ToolResult { is_error, .. } if *is_error
-    )));
+    assert!(is_tool_error_naming(
+        &requests[1].messages[2],
+        "file not found"
+    ));
+    assert!(saw_tool_error(&events));
 }
 
 #[tokio::test]
@@ -114,14 +207,8 @@ async fn empty_response_aborts_with_exit_one() {
     let runner = Runner::new(provider, registry_with_ok("scripted", "x"), config());
     let (outcome, events) = run_collect(&runner, "say something").await;
 
-    assert_eq!(outcome.exit_code(), 1);
-    assert_eq!(outcome.category, CancelCategory::Error);
-    assert!(outcome.detail.contains("empty response"));
-    assert!(matches!(
-        events.last(),
-        Some(craft_runtime::RuntimeEvent::RunFinished { exit_code, category, .. })
-        if *exit_code == 1 && *category == CancelCategory::Error
-    ));
+    assert_error_abort(&outcome, "empty response");
+    assert!(is_finished_with(&events, 1, CancelCategory::Error));
 }
 
 #[tokio::test]
@@ -173,26 +260,12 @@ async fn salvaged_arguments_short_circuit_the_tool_with_feedback() {
     let (outcome, events) = run_collect(&runner, "use the tool").await;
 
     assert_eq!(outcome.exit_code(), 0);
-    let results: Vec<(bool, String)> = events
-        .iter()
-        .filter_map(|event| match event {
-            craft_runtime::RuntimeEvent::ToolResult {
-                is_error, content, ..
-            } => Some((*is_error, content.clone())),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(results.len(), 1, "one tool result");
-    assert!(results[0].0, "the marker call is an is_error result");
-    assert_eq!(
-        results[0].1,
-        "tool arguments were not valid JSON; the call was not executed: not json {"
-    );
+    let results = tool_results(&events);
+    assert_salvage_feedback(&results, "not json {");
+
+    let replayed = request_messages(&provider, 1);
     assert!(
-        matches!(
-            provider.requests()[1].messages[2].as_ref(),
-            ChatMessage::Tool { is_error, .. } if *is_error
-        ),
+        is_tool_error(&replayed[2]),
         "the feedback rides back to the model"
     );
 }

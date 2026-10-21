@@ -143,6 +143,8 @@ fn prepare_member(
         idle_timeout: settings.idle_timeout,
         step_attempts: settings.step_attempts,
         spawn: Some(child_wiring),
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
     };
     let child: ChildRun = prepare_child(
         &request.profile,

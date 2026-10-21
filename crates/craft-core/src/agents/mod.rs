@@ -3,6 +3,7 @@
 //! selected profile's system prompt. Field rules mirror the agent-file
 //! gate; discovery is fail-soft, selection fail-closed.
 
+pub mod globs;
 pub mod load;
 pub mod parse;
 pub(crate) mod tools;
@@ -27,13 +28,15 @@ pub const TOOL_IDS: [&str; 9] = [
 ];
 
 /// Frontmatter keys the format accepts; anything else is an error.
-pub(crate) const KNOWN_KEYS: [&str; 10] = [
+pub(crate) const KNOWN_KEYS: [&str; 12] = [
     "name",
     "description",
     "model",
     "promptMode",
     "tools",
     "disallowedTools",
+    "denyRead",
+    "denyWrite",
     "maxTurns",
     "timeoutSecs",
     "background",
@@ -63,6 +66,10 @@ pub struct AgentFile {
     pub tools: Option<Vec<String>>,
     /// Applied after the allowlist or the inherited set.
     pub disallowed_tools: Vec<String>,
+    /// Path globs this profile may never read.
+    pub deny_read: Vec<String>,
+    /// Path globs this profile may never write.
+    pub deny_write: Vec<String>,
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u64>,
     pub background: bool,

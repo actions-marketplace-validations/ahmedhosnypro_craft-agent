@@ -9,7 +9,7 @@ use crate::plan::{ArgSpec, OnFailure, StepSpec};
 pub fn finalize_graph(file: &str, steps: &mut [StepSpec]) -> Result<(), WorkflowError> {
     check_needs(file, steps)?;
     link_dependants(steps);
-    check_skip_rule(file, steps)?;
+    check_loose_rule(file, steps)?;
     kahn(file, steps)
 }
 
@@ -50,13 +50,20 @@ fn link_dependants(steps: &mut [StepSpec]) {
     }
 }
 
-/// A skipped step must not have dependants, or the run would stall.
-fn check_skip_rule(file: &str, steps: &[StepSpec]) -> Result<(), WorkflowError> {
+/// A step whose failure the run survives on (skip or warn) must not hold
+/// dependants, or the run would stall.
+fn check_loose_rule(file: &str, steps: &[StepSpec]) -> Result<(), WorkflowError> {
     for spec in steps.iter() {
-        if spec.on_failure == OnFailure::Skip && !spec.dependants.is_empty() {
-            return Err(WorkflowError::SkipHasDependants {
+        if spec.on_failure.continues_on_failure() && !spec.dependants.is_empty() {
+            return Err(WorkflowError::LooseFailureHasDependants {
                 file: file.to_string(),
                 step: spec.id.clone(),
+                value: match spec.on_failure {
+                    OnFailure::Skip => "skip",
+                    OnFailure::Warn => "warn",
+                    OnFailure::Stop => "stop",
+                }
+                .to_string(),
                 dependent: spec.dependants[0].clone(),
             });
         }

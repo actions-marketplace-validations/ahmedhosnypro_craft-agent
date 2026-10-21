@@ -221,3 +221,45 @@ fn malformed_mcp_tokens_are_rejected() {
         expect(&path, &format!("unknown tool id '{bad}' in tools"));
     }
 }
+
+#[test]
+fn deny_glob_lists_load_from_frontmatter() {
+    let path = agent(
+        "probe.md",
+        "denyRead: tests/**, **/*.spec.ts\ndenyWrite: secrets/**\n",
+    )
+    .unwrap();
+    let file = load_file(&path).expect("a valid deny list must load");
+    assert_eq!(file.deny_read, ["tests/**", "**/*.spec.ts"]);
+    assert_eq!(file.deny_write, ["secrets/**"]);
+}
+
+#[test]
+fn absolute_deny_glob_is_rejected() {
+    let path = agent("probe.md", "denyRead: /etc/**\n").unwrap();
+    expect(&path, "not a workspace-relative glob in denyRead");
+}
+
+#[test]
+fn traversing_deny_glob_is_rejected() {
+    let path = agent("probe.md", "denyWrite: ../secrets/**\n").unwrap();
+    expect(&path, "not a workspace-relative glob in denyWrite");
+}
+
+#[test]
+fn embedded_star_star_deny_glob_is_rejected() {
+    let path = agent("probe.md", "denyRead: a**b/**\n").unwrap();
+    expect(&path, "not a workspace-relative glob in denyRead");
+}
+
+#[test]
+fn empty_deny_list_is_rejected() {
+    let path = agent("probe.md", "denyRead: []\n").unwrap();
+    expect(&path, "empty glob list in denyRead");
+}
+
+#[test]
+fn an_unknown_frontmatter_key_still_fails() {
+    let path = agent("probe.md", "denyread: tests/**\n").unwrap();
+    expect(&path, "unknown frontmatter key: denyread");
+}

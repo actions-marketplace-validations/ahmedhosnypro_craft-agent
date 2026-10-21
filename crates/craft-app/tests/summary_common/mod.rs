@@ -74,12 +74,24 @@ pub fn assistant_text(text: &str) -> ChatMessage {
     }
 }
 
-pub fn assistant_call(name: &str) -> ChatMessage {
+pub struct ScriptedCall {
+    name: String,
+}
+
+impl ScriptedCall {
+    pub fn named(name: &str) -> ScriptedCall {
+        ScriptedCall {
+            name: name.to_string(),
+        }
+    }
+}
+
+pub fn assistant_call(call: ScriptedCall) -> ChatMessage {
     ChatMessage::Assistant {
         text: String::new(),
         tool_calls: vec![ToolCall {
             id: String::from("c1"),
-            name: name.to_string(),
+            name: call.name,
             arguments: String::from("{}"),
         }],
         native_blocks: None,
@@ -121,7 +133,7 @@ pub async fn session_file_at(path: &Path, messages: &[ChatMessage]) -> Result<()
 pub fn run_session() -> Vec<ChatMessage> {
     vec![
         user("do the task"),
-        assistant_call("gh"),
+        assistant_call(ScriptedCall::named("gh")),
         tool_result(
             "To https://github.com/octo/app.git\n \
              9f7c1a2..3b8d4e5  main -> main\nopened https://github.com/octo/app/pull/7",

@@ -20,18 +20,24 @@ fn config_with_session(path: PathBuf) -> RunConfig {
     cfg
 }
 
-#[tokio::test]
-async fn sensitive_path_refusal_round_trips_and_the_run_continues() {
+/// Run one tool call through the real runner over the builtin registry
+/// and return the `(is_error, content)` the model saw for it.
+async fn run_one_call(tool: &str, arguments: &str) -> (bool, String) {
     let provider = FakeProvider::new(vec![
-        tool_turn("c1", "read_file", r#"{"path":".env"}"#, usage(1, 1)),
+        tool_turn("c1", tool, arguments, usage(1, 1)),
         text_turn("done", StopReason::EndTurn, usage(1, 1)),
     ]);
     let runner = Runner::new(provider, builtin_registry(), config());
-    let (outcome, events) = run_collect(&runner, "read the secrets").await;
-
+    let (outcome, events) = run_collect(&runner, "run").await;
     assert_eq!(outcome.exit_code(), 0);
     assert_eq!(outcome.category, CancelCategory::Completed);
-    let (is_error, content) = result_of(&events, "c1");
+    result_of(&events, "c1")
+}
+
+#[tokio::test]
+async fn sensitive_path_refusal_round_trips_and_the_run_continues() {
+    let (is_error, content) = run_one_call("read_file", r#"{"path":".env"}"#).await;
+
     assert!(is_error);
     assert!(content.contains("path rejected"));
     assert!(content.contains(".env"));
@@ -56,40 +62,20 @@ fn result_of(events: &[craft_runtime::RuntimeEvent], call_id: &str) -> (bool, St
 
 #[tokio::test]
 async fn workspace_escape_refusal_round_trips_and_the_run_continues() {
-    let provider = FakeProvider::new(vec![
-        tool_turn(
-            "c1",
-            "read_file",
-            r#"{"path":"../outside.txt"}"#,
-            usage(1, 1),
-        ),
-        text_turn("done", StopReason::EndTurn, usage(1, 1)),
-    ]);
-    let runner = Runner::new(provider, builtin_registry(), config());
-    let (outcome, events) = run_collect(&runner, "escape").await;
+    let (is_error, content) = run_one_call("read_file", r#"{"path":"../outside.txt"}"#).await;
 
-    assert_eq!(outcome.exit_code(), 0);
-    let (is_error, content) = result_of(&events, "c1");
     assert!(is_error);
     assert!(content.contains("escapes the allowed roots"));
 }
 
 #[tokio::test]
 async fn an_absolute_write_outside_the_root_is_refused_and_the_run_continues() {
-    let provider = FakeProvider::new(vec![
-        tool_turn(
-            "c1",
-            "write_file",
-            r#"{"path":"/craft-agent-refusal-outside/x.md","content":"x"}"#,
-            usage(1, 1),
-        ),
-        text_turn("done", StopReason::EndTurn, usage(1, 1)),
-    ]);
-    let runner = Runner::new(provider, builtin_registry(), config());
-    let (outcome, events) = run_collect(&runner, "write outside").await;
+    let (is_error, content) = run_one_call(
+        "write_file",
+        r#"{"path":"/craft-agent-refusal-outside/x.md","content":"x"}"#,
+    )
+    .await;
 
-    assert_eq!(outcome.exit_code(), 0);
-    let (is_error, content) = result_of(&events, "c1");
     assert!(is_error);
     assert!(content.contains("escapes the allowed roots"));
     assert!(!std::path::Path::new("/craft-agent-refusal-outside/x.md").exists());

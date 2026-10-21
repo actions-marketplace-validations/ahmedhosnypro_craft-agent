@@ -59,7 +59,11 @@ pub async fn connect(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    let ctx = ToolCtx::with_env(workspace.to_path_buf(), pairs);
+    let ctx = ToolCtx::with_env_scopes(
+        workspace.to_path_buf(),
+        pairs,
+        craft_tools::scope::ScopeDenies::default(),
+    );
     craft_mcp::connect_all(&ctx, None).await
 }
 

@@ -25,6 +25,53 @@ fn assert_missing_var(err: &AppError, var: &str) {
     assert!(err.to_string().contains(var));
 }
 
+fn assert_invalid_provider_error(err: &AppError, expected: &str) {
+    assert!(matches!(err, AppError::InvalidProvider { value } if value == expected));
+    let text = err.to_string();
+    for known in ["anthropic", "openai", "gemini", "vertex"] {
+        assert!(text.contains(known), "the error names {known}: {text}");
+    }
+}
+
+fn assert_provider_identity(cfg: &EnvConfig) {
+    assert_eq!(cfg.provider, ProviderKind::OpenAi);
+    assert_eq!(cfg.model, "gpt-4o-mini");
+    assert_eq!(cfg.api_key, "sk-test");
+    assert_eq!(cfg.gh_token, None);
+}
+
+fn assert_openai_base_url(cfg: &EnvConfig) {
+    assert_eq!(cfg.base_url, "https://api.openai.com/v1");
+}
+
+fn assert_anthropic_identity(cfg: &EnvConfig) {
+    assert_eq!(cfg.provider, ProviderKind::Anthropic);
+    assert_eq!(cfg.api_key, "ak-test");
+    assert_eq!(cfg.anthropic_auth, AuthScheme::ApiKey);
+}
+
+fn assert_anthropic_base_url(cfg: &EnvConfig) {
+    assert_eq!(cfg.base_url, "https://api.anthropic.com");
+}
+
+fn assert_gemini_identity(cfg: &EnvConfig) {
+    assert_eq!(cfg.provider, ProviderKind::Gemini);
+    assert_eq!(cfg.api_key, "gk-test");
+    assert_eq!(cfg.base_url, "https://generativelanguage.googleapis.com");
+}
+
+fn assert_vertex_identity(cfg: &EnvConfig) {
+    assert_eq!(cfg.provider, ProviderKind::Vertex);
+    assert_eq!(cfg.model, "gemini-2.5-flash");
+    assert_eq!(cfg.vertex_project, "fixture-project");
+    assert_eq!(cfg.vertex_location, "us-central1");
+}
+
+fn assert_vertex_keyless_mount(cfg: &EnvConfig) {
+    assert_eq!(cfg.api_key, "", "the vertex mount is keyless");
+    assert_eq!(cfg.base_url, "", "the endpoint comes from the location");
+}
+
 fn resolve_provider(
     provider: &'static str,
     model: &'static str,
@@ -65,11 +112,7 @@ fn invalid_provider_value_is_rejected() {
         ("CRAFT_AGENT_MODEL", "m"),
     ])
     .expect_err("unknown provider must fail");
-    assert!(matches!(err, AppError::InvalidProvider { ref value } if value == "claude"));
-    assert!(err.to_string().contains("anthropic"));
-    assert!(err.to_string().contains("openai"));
-    assert!(err.to_string().contains("gemini"));
-    assert!(err.to_string().contains("vertex"));
+    assert_invalid_provider_error(&err, "claude");
 }
 
 #[test]
@@ -83,11 +126,8 @@ fn missing_model_is_a_named_error() {
 fn openai_resolves_with_default_base_url() {
     let cfg = resolve_provider("openai", "gpt-4o-mini", "OPENAI_API_KEY", "sk-test", &[])
         .expect("openai resolves");
-    assert_eq!(cfg.provider, ProviderKind::OpenAi);
-    assert_eq!(cfg.model, "gpt-4o-mini");
-    assert_eq!(cfg.api_key, "sk-test");
-    assert_eq!(cfg.base_url, "https://api.openai.com/v1");
-    assert_eq!(cfg.gh_token, None);
+    assert_provider_identity(&cfg);
+    assert_openai_base_url(&cfg);
 }
 
 #[test]
@@ -129,10 +169,8 @@ fn anthropic_resolves_with_its_key() {
         &[],
     )
     .expect("anthropic resolves");
-    assert_eq!(cfg.provider, ProviderKind::Anthropic);
-    assert_eq!(cfg.api_key, "ak-test");
-    assert_eq!(cfg.base_url, "https://api.anthropic.com");
-    assert_eq!(cfg.anthropic_auth, AuthScheme::ApiKey);
+    assert_anthropic_identity(&cfg);
+    assert_anthropic_base_url(&cfg);
 }
 
 #[test]
@@ -185,9 +223,7 @@ fn anthropic_auth_unknown_value_is_a_named_error() {
 fn gemini_resolves_with_its_key() {
     let cfg = resolve_provider("gemini", "gemini-2", "GOOGLE_API_KEY", "gk-test", &[])
         .expect("gemini resolves");
-    assert_eq!(cfg.provider, ProviderKind::Gemini);
-    assert_eq!(cfg.api_key, "gk-test");
-    assert_eq!(cfg.base_url, "https://generativelanguage.googleapis.com");
+    assert_gemini_identity(&cfg);
 }
 
 fn vertex_pairs(
@@ -211,12 +247,8 @@ fn vertex_pairs(
 fn vertex_resolves_with_project_and_location() {
     let cfg = resolve_pairs(&vertex_pairs(Some("fixture-project"), Some("us-central1")))
         .expect("vertex resolves");
-    assert_eq!(cfg.provider, ProviderKind::Vertex);
-    assert_eq!(cfg.model, "gemini-2.5-flash");
-    assert_eq!(cfg.vertex_project, "fixture-project");
-    assert_eq!(cfg.vertex_location, "us-central1");
-    assert_eq!(cfg.api_key, "", "the vertex mount is keyless");
-    assert_eq!(cfg.base_url, "", "the endpoint comes from the location");
+    assert_vertex_identity(&cfg);
+    assert_vertex_keyless_mount(&cfg);
 }
 
 #[test]

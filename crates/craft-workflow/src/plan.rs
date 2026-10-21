@@ -1,17 +1,18 @@
-//! The workflow plan: frontmatter types and the parse entry. Arg specs and
-//! resolution live in `args`.
+//! The workflow plan: the frontmatter types and the text parse. Arg specs
+//! and resolution live in `args`; the file read and frontmatter shape
+//! checks live in `plan_file`.
 
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::args::parse_args;
 pub use crate::args::resolve_args;
 use crate::error::WorkflowError;
+use crate::gates;
 use crate::graph;
 use crate::hash::sha256_hex;
+use crate::plan_file::{self, Frontmatter};
 use crate::steps;
 use crate::truncate_chars;
 use crate::validate;
@@ -45,7 +46,54 @@ pub const MAX_STEP_TURNS_CEILING: u32 = 10_000;
 pub enum OnFailure {
     Stop,
     Skip,
+    /// Failure is visible in the report but neither stops the run nor
+    /// fails its conclusion.
+    Warn,
 }
+
+impl OnFailure {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "stop" => Some(Self::Stop),
+            "skip" => Some(Self::Skip),
+            "warn" => Some(Self::Warn),
+            _ => None,
+        }
+    }
+
+    /// Whether a failed settle under this policy keeps the run going.
+    pub fn continues_on_failure(self) -> bool {
+        matches!(self, Self::Skip | Self::Warn)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepKind {
+    #[default]
+    Agent,
+    Judge,
+}
+
+/// How a judge panel's seat verdicts merge into one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeMerge {
+    Majority,
+    Unanimous,
+}
+
+/// A judge step's gate: seats, merge policy, and the bounded repair loop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JudgeSpec {
+    pub panel: u32,
+    pub merge: JudgeMerge,
+    /// Verdict-fail re-runs of the producing step, 0..=MAX_FEEDBACK.
+    pub max_feedback: u32,
+}
+
+pub const MAX_PANEL: u32 = 5;
+pub const MAX_FEEDBACK: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,14 +154,28 @@ pub struct StepSpec {
     pub id: String,
     pub agent: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub kind: StepKind,
+    #[serde(default)]
+    pub judge: Option<JudgeSpec>,
     pub needs: Vec<String>,
     pub max_turns: u32,
     pub retry: u32,
     pub on_failure: OnFailure,
+    #[serde(default)]
+    pub deny_read: Vec<String>,
+    #[serde(default)]
+    pub deny_write: Vec<String>,
     pub outputs: Vec<String>,
     pub body: String,
     #[serde(skip)]
     pub dependants: Vec<String>,
+}
+
+impl StepSpec {
+    pub fn is_judge(&self) -> bool {
+        self.kind == StepKind::Judge
+    }
 }
 
 /// A validated plan. The identity hash covers everything except `limits`
@@ -147,33 +209,6 @@ pub fn valid_key(text: &str) -> bool {
 }
 
 impl WorkflowPlan {
-    pub fn parse_file(path: &Path) -> Result<Self, WorkflowError> {
-        let file = path.to_string_lossy().into_owned();
-        let handle = std::fs::File::open(path).map_err(|err| WorkflowError::Parse {
-            file: file.clone(),
-            detail: err.to_string(),
-        })?;
-        let mut bytes = Vec::new();
-        handle
-            .take(MAX_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|err| WorkflowError::Parse {
-                file: file.clone(),
-                detail: err.to_string(),
-            })?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(WorkflowError::Parse {
-                file,
-                detail: format!("larger than {MAX_FILE_BYTES} bytes"),
-            });
-        }
-        let text = String::from_utf8(bytes).map_err(|_| WorkflowError::Parse {
-            file: file.clone(),
-            detail: "not valid UTF-8".to_string(),
-        })?;
-        Self::parse(&file, &text)
-    }
-
     pub fn parse(file: &str, text: &str) -> Result<Self, WorkflowError> {
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let rest = text
@@ -184,7 +219,7 @@ impl WorkflowPlan {
                 detail: "missing `---` opening the frontmatter".to_string(),
             })?;
         let (frontmatter, shared_body) =
-            split_frontmatter(rest).map_err(|detail| WorkflowError::Parse {
+            plan_file::split_frontmatter(rest).map_err(|detail| WorkflowError::Parse {
                 file: file.to_string(),
                 detail,
             })?;
@@ -201,6 +236,7 @@ impl WorkflowPlan {
         let limits = validate::convert_limits(file, front.root.get("limits"))?;
         let mut steps = steps::convert_steps(file, front.root.get("steps"))?;
         graph::finalize_graph(file, &mut steps)?;
+        gates::cross_step_gate_checks(file, &steps)?;
         graph::check_arg_refs(file, &steps, &shared_body, &args)?;
         let plan = Self {
             name,
@@ -220,84 +256,4 @@ impl WorkflowPlan {
             ..plan
         })
     }
-}
-
-const FRONTMATTER_FIELDS: &[&str] = &["name", "description", "args", "limits", "steps"];
-
-/// A parsed frontmatter root, with the file name for error context.
-struct Frontmatter<'a> {
-    file: &'a str,
-    root: &'a yaml::YValue,
-}
-
-impl Frontmatter<'_> {
-    /// The root must be a map holding only known fields.
-    fn check_fields(&self) -> Result<(), WorkflowError> {
-        let entries = self.root.as_map().ok_or_else(|| WorkflowError::Parse {
-            file: self.file.to_string(),
-            detail: "frontmatter must be a mapping".to_string(),
-        })?;
-        for (key, _) in entries {
-            if !FRONTMATTER_FIELDS.contains(&key.as_str()) {
-                return Err(WorkflowError::UnknownField {
-                    file: self.file.to_string(),
-                    context: "frontmatter".to_string(),
-                    field: key.clone(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn name(&self) -> Result<String, WorkflowError> {
-        let name = match self.root.get("name") {
-            Some(value) => value.as_str().ok_or_else(|| WorkflowError::Parse {
-                file: self.file.to_string(),
-                detail: "`name` must be a string".to_string(),
-            })?,
-            None => {
-                return Err(WorkflowError::MissingName {
-                    file: self.file.to_string(),
-                });
-            }
-        };
-        if !valid_key(name) {
-            return Err(WorkflowError::Parse {
-                file: self.file.to_string(),
-                detail: format!(
-                    "`name` `{name}` is not 1..={MAX_NAME_CHARS} chars of a-z, 0-9, dot, dash, underscore"
-                ),
-            });
-        }
-        Ok(name.to_string())
-    }
-
-    fn description(&self) -> Result<Option<String>, WorkflowError> {
-        let Some(value) = self.root.get("description") else {
-            return Ok(None);
-        };
-        let text = value.as_str().ok_or_else(|| WorkflowError::Parse {
-            file: self.file.to_string(),
-            detail: "`description` must be a string".to_string(),
-        })?;
-        if text.chars().count() > MAX_DESCRIPTION_CHARS {
-            return Err(WorkflowError::Parse {
-                file: self.file.to_string(),
-                detail: "`description` exceeds 256 chars".to_string(),
-            });
-        }
-        Ok(Some(text.to_string()))
-    }
-}
-
-fn split_frontmatter(rest: &str) -> Result<(&str, &str), String> {
-    let mut offset = 0usize;
-    for line in rest.split_inclusive('\n') {
-        let bare = line.trim_end_matches(['\n', '\r']);
-        if bare == "---" {
-            return Ok((&rest[..offset], &rest[offset + line.len()..]));
-        }
-        offset += line.len();
-    }
-    Err("frontmatter is not closed by a `---` line".to_string())
 }

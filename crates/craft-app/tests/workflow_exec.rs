@@ -35,6 +35,10 @@ fn inputs(id: &str, max_turns: u32) -> StepInputs {
         agent: workflow_common::AGENT_NAME.to_string(),
         model: None,
         max_turns,
+        seat: None,
+        feedback: Vec::new(),
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
         prompt: "Run the step.".to_string(),
     }
 }

@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::envscrub;
 use crate::pathguard::{READ_ROOTS_KNOB, parse_read_roots};
+use crate::scope::ScopeDenies;
 
 use crate::event::ToolStream;
 use crate::schema::Schema;
@@ -90,26 +91,37 @@ pub struct ToolCtx {
     env: EnvSource,
     read_roots: Vec<PathBuf>,
     reads: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    /// Engine-enforced deny scopes for the file tools and bash.
+    denies: ScopeDenies,
 }
 
 impl ToolCtx {
     pub fn new(workspace_root: PathBuf) -> Self {
+        Self::with_scopes(workspace_root, ScopeDenies::default())
+    }
+
+    pub fn with_scopes(workspace_root: PathBuf, denies: ScopeDenies) -> Self {
         let mut ctx = Self {
             workspace_root,
             env: EnvSource::Process,
             read_roots: Vec::new(),
             reads: Arc::new(Mutex::new(HashMap::new())),
+            denies,
         };
         ctx.read_roots = parse_read_roots(ctx.env_value(READ_ROOTS_KNOB).as_deref());
         ctx
     }
-
-    pub fn with_env(workspace_root: PathBuf, env: Vec<(String, String)>) -> Self {
+    pub fn with_env_scopes(
+        workspace_root: PathBuf,
+        env: Vec<(String, String)>,
+        denies: ScopeDenies,
+    ) -> Self {
         let mut ctx = Self {
             workspace_root,
             env: EnvSource::Explicit(env),
             read_roots: Vec::new(),
             reads: Arc::new(Mutex::new(HashMap::new())),
+            denies,
         };
         ctx.read_roots = parse_read_roots(ctx.env_value(READ_ROOTS_KNOB).as_deref());
         ctx
@@ -145,6 +157,21 @@ impl ToolCtx {
                 .find(|(key, _)| key == name)
                 .map(|(_, value)| value.clone()),
         }
+    }
+
+    /// The first read-deny glob matching an absolute path.
+    pub fn denies_read(&self, path: &Path) -> Option<String> {
+        self.denies.denies_read(&self.workspace_root, path)
+    }
+
+    /// The first write-deny glob matching an absolute path.
+    pub fn denies_write(&self, path: &Path) -> Option<String> {
+        self.denies.denies_write(&self.workspace_root, path)
+    }
+
+    /// A denied path fragment appearing in a command line.
+    pub fn command_denied(&self, command: &str) -> Option<String> {
+        self.denies.command_mentions_denied(command)
     }
 
     fn reads(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, u64>> {

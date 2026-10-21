@@ -51,6 +51,10 @@ pub struct RunConfig {
     /// Outer bound on a stalled event stream; None disables it.
     pub idle_timeout: Option<Duration>,
     pub workspace_root: PathBuf,
+    /// Read-denied path globs for this run's own step isolation.
+    pub deny_read: Vec<String>,
+    /// Write-denied path globs for this run's own step isolation.
+    pub deny_write: Vec<String>,
     /// Append-only JSONL transcript; None keeps the run in memory.
     pub session_path: Option<PathBuf>,
     /// The subagent hub this run spawns through; the root wiring
@@ -77,6 +81,8 @@ impl RunConfig {
             turn_caps: TurnCaps::default(),
             idle_timeout: None,
             workspace_root,
+            deny_read: Vec::new(),
+            deny_write: Vec::new(),
             session_path: None,
             subagents: None,
             redactor: Arc::new(craft_redact::Redactor::from_env()),
@@ -135,7 +141,13 @@ impl<P: Provider + Send + Sync> Runner<P> {
                 );
             }
         };
-        let ctx = ToolCtx::new(self.config.workspace_root.clone());
+        let ctx = ToolCtx::with_scopes(
+            self.config.workspace_root.clone(),
+            craft_tools::scope::ScopeDenies::new(
+                self.config.deny_read.clone(),
+                self.config.deny_write.clone(),
+            ),
+        );
         let mut total = zero_usage();
         let mut guard = Stationarity::default();
         let mut turn: u32 = 0;

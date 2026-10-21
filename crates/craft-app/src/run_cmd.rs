@@ -50,15 +50,38 @@ pub fn execute_run(run: RunCli) -> Result<i32, AppError> {
     })
 }
 
-fn execute_run_inner(run: RunCli, redactor: &Arc<craft_redact::Redactor>) -> Result<i32, AppError> {
+/// The two caps the summary table reports next to the run counts.
+struct RunCaps {
+    turn_cap: u32,
+    token_budget: u64,
+}
+
+/// A mounted run ready to drive: the runner, the prompt it runs, the
+/// wall-clock cap the profile names, and the session it writes to.
+struct MountedRun {
+    runner: Runner<craft_providers::backend::Backend>,
+    prompt: String,
+    caps: RunCaps,
+    deadline: Option<u64>,
+    format: crate::cli::OutputFormat,
+    session_path: Option<std::path::PathBuf>,
+    watch: Arc<Mutex<RunWatch>>,
+}
+
+/// Mounts the backend, the profile, and the subagent hub, returning the
+/// run they describe. `None` names a profile that failed to resolve:
+/// its own line is already printed.
+fn mount_run(
+    run: &RunCli,
+    redactor: &Arc<craft_redact::Redactor>,
+    config: &crate::config::EnvConfig,
+) -> Result<Option<MountedRun>, AppError> {
     let prompt = read_prompt(&run.prompt)?;
-    let env = env_from_process();
-    let config = resolve_env_config(&env)?;
-    let backend = mount_backend(&config)?;
+    let backend = mount_backend(config)?;
     let workspace_root =
         std::env::current_dir().map_err(|source| AppError::WorkspaceRoot { source })?;
     let session_path = default_session_path(&workspace_root)?;
-    let agent = match resolve(&run, &workspace_root) {
+    let agent = match resolve(run, &workspace_root) {
         Ok(agent) => agent,
         Err(error) => {
             stream_json::write_terminal_line(
@@ -67,29 +90,54 @@ fn execute_run_inner(run: RunCli, redactor: &Arc<craft_redact::Redactor>) -> Res
                 redaction::terminal_detail(&error, redactor),
             );
             eprintln!("craft-agent: {error}");
-            return Ok(1);
+            return Ok(None);
         }
     };
-    let run_config = build_run_config(&run, agent.as_ref(), workspace_root.clone(), session_path);
+    let run_config = build_run_config(run, agent.as_ref(), workspace_root.clone(), session_path);
+    let caps = RunCaps {
+        turn_cap: run_config.max_turns,
+        token_budget: run_config.max_total_tokens,
+    };
     let session_path = run_config.session_path.clone();
-    let turn_cap = run_config.max_turns;
-    let token_budget = run_config.max_total_tokens;
+    let deadline = agent.as_ref().and_then(|agent| agent.timeout_secs);
     let subagents = subagent_setup::mount(&run_config, &workspace_root, backend.clone())?;
     let run_registry =
         profile::build_registry(agent.as_ref(), ToolLimits::default(), subagents.clone());
     let mut run_config = run_config;
     run_config.redactor = redactor.clone();
     run_config.subagents = subagents;
-    let runner = Runner::new(backend, run_registry, run_config);
-    let (sink, writer) = spawn_run_writer(run.output_format, redactor)?;
+    Ok(Some(MountedRun {
+        runner: Runner::new(backend, run_registry, run_config),
+        prompt,
+        caps,
+        deadline,
+        format: run.output_format,
+        session_path,
+        watch: Arc::new(Mutex::new(RunWatch::default())),
+    }))
+}
 
+/// Streams the run's events through the writer, honouring the profile's
+/// wall-clock cap; the runtime is scoped to this call.
+fn drive_run(
+    mounted: MountedRun,
+    redactor: &craft_redact::Redactor,
+) -> Result<(crate::RunOutcome, RunCaps), AppError> {
+    let MountedRun {
+        runner,
+        prompt,
+        caps,
+        deadline,
+        format,
+        session_path,
+        watch,
+    } = mounted;
+    let (sink, writer) = spawn_run_writer(format, redactor)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|source| AppError::AsyncRuntime { source })?;
     let outcome = {
-        let deadline = agent.as_ref().and_then(|agent| agent.timeout_secs);
-        let watch = Arc::new(Mutex::new(RunWatch::default()));
         let driven = async {
             let run_future = runner.run(&prompt, |mut event| {
                 craft_runtime::redact_event(&mut event, redactor);
@@ -121,6 +169,16 @@ fn execute_run_inner(run: RunCli, redactor: &Arc<craft_redact::Redactor>) -> Res
         };
         runtime.block_on(event_writer::drive(driven, writer, session_path.clone()))
     };
+    Ok((outcome, caps))
+}
+
+fn execute_run_inner(run: RunCli, redactor: &Arc<craft_redact::Redactor>) -> Result<i32, AppError> {
+    let env = env_from_process();
+    let config = resolve_env_config(&env)?;
+    let Some(mounted) = mount_run(&run, redactor, &config)? else {
+        return Ok(1);
+    };
+    let (outcome, caps) = drive_run(mounted, redactor)?;
     summary::emit_run_summary(
         &env,
         run.output_format,
@@ -129,8 +187,8 @@ fn execute_run_inner(run: RunCli, redactor: &Arc<craft_redact::Redactor>) -> Res
             mission: "run",
             model: config.model.clone(),
             provider: summary::provider_name(config.provider).to_string(),
-            turn_cap: Some(turn_cap),
-            token_budget: Some(token_budget),
+            turn_cap: Some(caps.turn_cap),
+            token_budget: Some(caps.token_budget),
             rows: redaction::summary_rows(redactor),
         },
     );

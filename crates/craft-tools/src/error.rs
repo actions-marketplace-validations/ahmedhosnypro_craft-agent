@@ -59,6 +59,13 @@ pub enum ToolError {
     GhWriteRepoMalformed,
     #[error("egress denied: `{host}` is not in the CRAFT_AGENT_EGRESS_ALLOWLIST")]
     EgressHostDenied { host: String },
+    #[error("tool `{tool}` denied by scope glob `{glob}` ({mode}): {path}")]
+    ScopeDenied {
+        tool: String,
+        path: String,
+        glob: String,
+        mode: &'static str,
+    },
     #[error(
         "egress denied: cannot resolve the target host of a network command while CRAFT_AGENT_EGRESS_ALLOWLIST is set: `{snippet}`"
     )]

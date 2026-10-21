@@ -27,118 +27,51 @@ const LEGACY_OUTPUT_TOKENS: u32 = 8_192;
 const TTS_CONTEXT_TOKENS: u32 = 8_192;
 const TTS_OUTPUT_TOKENS: u32 = 16_384;
 
-const fn family(
-    prefix: &'static str,
-    context_window_tokens: u32,
-    max_output_tokens: u32,
-    thinking: bool,
-    multimodal: bool,
-) -> ModelFamily {
-    ModelFamily {
-        prefix,
-        info: ModelInfo {
-            context_window_tokens,
-            max_output_tokens,
-            thinking,
-            multimodal,
-        },
-    }
+/// The chat rows: the thinking request and image input on the chat caps.
+const CHAT_INFO: ModelInfo = ModelInfo {
+    context_window_tokens: CHAT_CONTEXT_TOKENS,
+    max_output_tokens: CHAT_OUTPUT_TOKENS,
+    thinking: true,
+    multimodal: true,
+};
+
+/// The legacy flash rows: image input on the chat input cap and the
+/// earlier output cap, without the thinking request.
+const LEGACY_CHAT_INFO: ModelInfo = ModelInfo {
+    context_window_tokens: CHAT_CONTEXT_TOKENS,
+    max_output_tokens: LEGACY_OUTPUT_TOKENS,
+    thinking: false,
+    multimodal: true,
+};
+
+/// The speech rows: the small caps, no thinking request, no image input.
+const TTS_INFO: ModelInfo = ModelInfo {
+    context_window_tokens: TTS_CONTEXT_TOKENS,
+    max_output_tokens: TTS_OUTPUT_TOKENS,
+    thinking: false,
+    multimodal: false,
+};
+
+const fn family(prefix: &'static str, info: ModelInfo) -> ModelFamily {
+    ModelFamily { prefix, info }
 }
 
 /// The documented rows. The longest matching prefix wins, so the
 /// text-only and lite variants outrank their family prefixes.
 const FAMILIES: &[ModelFamily] = &[
-    family(
-        "gemini-2.0-flash",
-        CHAT_CONTEXT_TOKENS,
-        LEGACY_OUTPUT_TOKENS,
-        false,
-        true,
-    ),
-    family(
-        "gemini-2.0-flash-lite",
-        CHAT_CONTEXT_TOKENS,
-        LEGACY_OUTPUT_TOKENS,
-        false,
-        true,
-    ),
-    family(
-        "gemini-2.5-flash",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-2.5-flash-preview-tts",
-        TTS_CONTEXT_TOKENS,
-        TTS_OUTPUT_TOKENS,
-        false,
-        false,
-    ),
-    family(
-        "gemini-2.5-flash-lite",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-2.5-pro",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-3-flash",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-3.1-flash-lite",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-3.1-pro",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-3.5-flash-lite",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-3.6-flash",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-3.8-flash",
-        CHAT_CONTEXT_TOKENS,
-        CHAT_OUTPUT_TOKENS,
-        true,
-        true,
-    ),
-    family(
-        "gemini-3.8-flash-tts",
-        TTS_CONTEXT_TOKENS,
-        TTS_OUTPUT_TOKENS,
-        false,
-        false,
-    ),
+    family("gemini-2.0-flash", LEGACY_CHAT_INFO),
+    family("gemini-2.0-flash-lite", LEGACY_CHAT_INFO),
+    family("gemini-2.5-flash", CHAT_INFO),
+    family("gemini-2.5-flash-preview-tts", TTS_INFO),
+    family("gemini-2.5-flash-lite", CHAT_INFO),
+    family("gemini-2.5-pro", CHAT_INFO),
+    family("gemini-3-flash", CHAT_INFO),
+    family("gemini-3.1-flash-lite", CHAT_INFO),
+    family("gemini-3.1-pro", CHAT_INFO),
+    family("gemini-3.5-flash-lite", CHAT_INFO),
+    family("gemini-3.6-flash", CHAT_INFO),
+    family("gemini-3.8-flash", CHAT_INFO),
+    family("gemini-3.8-flash-tts", TTS_INFO),
 ];
 
 /// The model row an id resolves to, by longest matching prefix.

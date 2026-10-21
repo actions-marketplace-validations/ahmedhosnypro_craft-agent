@@ -39,6 +39,8 @@ pub struct ChildKnobs {
     pub idle_timeout: Option<Duration>,
     pub step_attempts: Option<u32>,
     pub spawn: Option<SubagentWiring>,
+    pub deny_read: Vec<String>,
+    pub deny_write: Vec<String>,
 }
 
 /// A prepared child run: the resolved config and the filtered
@@ -78,6 +80,8 @@ pub fn prepare_child(
     config.step_attempts = knobs.step_attempts;
     config.session_path = knobs.session_path;
     config.subagents = spawn;
+    config.deny_read = knobs.deny_read;
+    config.deny_write = knobs.deny_write;
     Ok(ChildRun {
         id: knobs.id,
         config,

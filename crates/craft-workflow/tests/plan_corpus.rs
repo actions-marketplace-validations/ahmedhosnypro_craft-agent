@@ -240,11 +240,16 @@ fn missing_body_is_typed() {
 }
 
 #[test]
-fn skip_with_dependants_is_typed() {
-    let text = "---\nname: t\nsteps:\n  - id: a\n    agent: w\n    on-failure: skip\n    body: |\n      x\n  - id: b\n    agent: w\n    needs: [a]\n    body: |\n      y\n---\n";
-    assert!(
-        matches!(err(text), WorkflowError::SkipHasDependants { step, dependent, .. } if step == "a" && dependent == "b")
-    );
+fn loose_on_failure_with_dependants_is_typed() {
+    for policy in ["skip", "warn"] {
+        let text = format!(
+            "---\nname: t\nsteps:\n  - id: a\n    agent: w\n    on-failure: {policy}\n    body: |\n      x\n  - id: b\n    agent: w\n    needs: [a]\n    body: |\n      y\n---\n",
+        );
+        assert!(
+            matches!(err(&text), WorkflowError::LooseFailureHasDependants { step, value, dependent, .. } if step == "a" && value == policy && dependent == "b"),
+            "accepted {policy}"
+        );
+    }
 }
 
 #[test]

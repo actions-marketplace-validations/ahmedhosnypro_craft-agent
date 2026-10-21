@@ -115,6 +115,22 @@ impl EditFileTool {
                 reason,
             });
         }
+        if let Some(glob) = ctx.denies_read(&abs) {
+            return Err(crate::scope::denial(
+                "edit_file",
+                &display(&abs),
+                &glob,
+                "read",
+            ));
+        }
+        if let Some(glob) = ctx.denies_write(&abs) {
+            return Err(crate::scope::denial(
+                "edit_file",
+                &display(&abs),
+                &glob,
+                "write",
+            ));
+        }
         let Some(stamp) = ctx.read_stamp(&abs) else {
             return Err(ToolError::NotReadFirst {
                 path: display(&abs),
@@ -129,7 +145,7 @@ impl EditFileTool {
         views: &Views<'_>,
         replace_all: bool,
     ) -> Result<Vec<usize>, ToolError> {
-        let positions = find_all(&views.file, &views.old);
+        let positions = crate::edit_match::find_all(&views.file, &views.old);
         if positions.is_empty() {
             return Err(ToolError::EditNoMatch { path: display(abs) });
         }
@@ -163,7 +179,12 @@ impl EditFileTool {
                 limit: self.limits.write_cap,
             });
         }
-        Ok(splice(&views.file, &views.old, &views.new, positions))
+        Ok(crate::edit_match::splice(
+            &views.file,
+            &views.old,
+            &views.new,
+            positions,
+        ))
     }
 }
 
@@ -244,79 +265,6 @@ fn write_guarded(abs: &std::path::Path, ctx: &ToolCtx, bytes: &[u8]) -> Result<(
         op: "write",
         msg: e.to_string(),
     })
-}
-
-/// Non-overlapping match positions of `needle` in `hay`, ascending.
-/// Knuth-Morris-Pratt, so long partial matches cannot make the scan
-/// quadratic in hostile input.
-fn find_all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
-    if needle.is_empty() || hay.len() < needle.len() {
-        return Vec::new();
-    }
-    scan_matches(hay, needle, &failure_table(needle))
-}
-
-/// The KMP failure links: fail[i] is the length of the longest proper
-/// prefix of `needle[..=i]` that is also its suffix.
-fn failure_table(needle: &[u8]) -> Vec<usize> {
-    let mut fail = vec![0usize; needle.len()];
-    let mut matched = 0usize;
-    for i in 1..needle.len() {
-        matched = failure_link(needle, &fail, i, matched);
-        if let Some(slot) = fail.get_mut(i) {
-            *slot = matched;
-        }
-    }
-    fail
-}
-
-/// Fall back through the table on a mismatch, then extend on a match.
-fn failure_link(needle: &[u8], fail: &[usize], i: usize, mut matched: usize) -> usize {
-    while matched > 0 && needle.get(i) != needle.get(matched) {
-        matched = fail.get(matched - 1).copied().unwrap_or(0);
-    }
-    if needle.get(i) == needle.get(matched) {
-        matched + 1
-    } else {
-        matched
-    }
-}
-
-fn scan_matches(hay: &[u8], needle: &[u8], fail: &[usize]) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut matched = 0usize;
-    let mut cursor = 0usize;
-    while let Some(byte) = hay.get(cursor) {
-        if matched == needle.len() {
-            out.push(cursor - needle.len());
-            matched = 0;
-            continue;
-        }
-        if Some(byte) == needle.get(matched) {
-            matched += 1;
-            cursor += 1;
-        } else if matched > 0 {
-            matched = fail.get(matched - 1).copied().unwrap_or(0);
-        } else {
-            cursor += 1;
-        }
-    }
-    if matched == needle.len() {
-        out.push(hay.len() - needle.len());
-    }
-    out
-}
-
-fn splice(bytes: &[u8], old: &[u8], new: &[u8], positions: &[usize]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut last = 0usize;
-    for pos in positions {
-        out.extend_from_slice(&bytes[last..*pos]);
-        out.extend_from_slice(new);
-        last = pos + old.len();
-    }
-    out.extend_from_slice(&bytes[last..]);
-    out
 }
 
 impl Tool for EditFileTool {

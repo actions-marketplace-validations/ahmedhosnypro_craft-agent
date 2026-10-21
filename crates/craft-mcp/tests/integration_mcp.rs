@@ -106,9 +106,10 @@ async fn live_connect(
         serde_json::to_string(&config)?,
     )
     .map_err(|err| format!("mcp.json: {err}"))?;
-    let ctx = ToolCtx::with_env(
+    let ctx = ToolCtx::with_env_scopes(
         workspace.clone(),
         vec![("CRAFT_AGENT_MCP".to_string(), "1".to_string())],
+        craft_tools::scope::ScopeDenies::default(),
     );
     craft_mcp::connect_all(&ctx, None)
         .await

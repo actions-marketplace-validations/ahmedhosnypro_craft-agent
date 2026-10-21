@@ -45,6 +45,8 @@ fn profile(name: &str, tools: Option<Vec<&str>>, deny: &[&str], mode: PromptMode
         prompt_mode: mode,
         tools: tools.map(|list| list.iter().map(|tool| tool.to_string()).collect()),
         disallowed_tools: deny.iter().map(|tool| tool.to_string()).collect(),
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
         max_turns: None,
         timeout_secs: None,
         background: false,

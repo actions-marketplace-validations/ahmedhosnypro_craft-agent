@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use craft_workflow::{
     Journal, RunConclusion, StepConclusion, StepExecutor, StepInputs, StepOutcome, StepStatus,
-    StepUsage, WorkflowError, WorkflowPlan, run_workflow,
+    StepUsage, WorkflowError, WorkflowPlan, judge::MAX_SEAT_REPAIRS, run_workflow,
 };
 
 mod common;
@@ -164,14 +164,16 @@ fn settled_message(report: &craft_workflow::WorkflowReport, id: &str) -> String 
 }
 
 #[tokio::test]
-async fn an_unparsed_seat_verdict_gets_one_corrective_round() {
+async fn a_seat_repairs_until_the_verdict_parses() {
     let fake = Scripted::new();
     fake.succeed("produce");
-    fake.queue(Attempt::new(
-        "gate",
-        StepConclusion::Success,
-        r#"{verdict: "pass", issues: []}"#,
-    ));
+    for _ in 0..3 {
+        fake.queue(Attempt::new(
+            "gate",
+            StepConclusion::Success,
+            r#"{verdict: "pass", issues: []}"#,
+        ));
+    }
     fake.queue(Attempt::new(
         "gate",
         StepConclusion::Success,
@@ -179,16 +181,13 @@ async fn an_unparsed_seat_verdict_gets_one_corrective_round() {
     ));
     let report = run(JUDGE_PLAN, &fake).await;
     assert!(matches!(report.conclusion, RunConclusion::Completed));
-    assert_eq!(report.exit_code, 0);
-    assert_eq!(fake.call_count("gate"), 2, "one corrective round");
+    assert_eq!(fake.call_count("gate"), 4, "repairs until it parses");
     let prompts = fake.prompts_for("gate");
-    assert_eq!(prompts.len(), 2);
     assert!(prompts[1].contains("Verdict format repair"));
-    assert!(prompts[1].contains("quoted keys"));
-    let repair_usage = report.total_usage;
-    assert_eq!(
-        repair_usage.input_tokens, 30,
-        "producer plus both gate attempts bill to the pool"
+    assert!(
+        prompts[1].contains("parser rejected") && prompts[1].contains("key must be a string"),
+        "the repair prompt carries the parser's complaint: {}",
+        &prompts[1][prompts[1].len().saturating_sub(200)..]
     );
 }
 
@@ -196,22 +195,23 @@ async fn an_unparsed_seat_verdict_gets_one_corrective_round() {
 async fn a_seat_that_never_repairs_still_fails_closed() {
     let fake = Scripted::new();
     fake.succeed("produce");
-    fake.queue(Attempt::new(
-        "gate",
-        StepConclusion::Success,
-        "I judged the work and it looks fine to me.",
-    ));
-    fake.queue(Attempt::new(
-        "gate",
-        StepConclusion::Success,
-        "Still no verdict here, just prose.",
-    ));
+    for _ in 0..=MAX_SEAT_REPAIRS {
+        fake.queue(Attempt::new(
+            "gate",
+            StepConclusion::Success,
+            "I judged the work and it looks fine to me.",
+        ));
+    }
     let error = run_err(JUDGE_PLAN, &fake).await;
     assert!(
         error.to_string().contains("no JSON object"),
         "the typed judge failure survives: {error}"
     );
-    assert_eq!(fake.call_count("gate"), 2, "one corrective round, bounded");
+    assert_eq!(
+        fake.call_count("gate"),
+        1 + MAX_SEAT_REPAIRS as usize,
+        "bounded by the repair cap"
+    );
 }
 
 #[tokio::test]

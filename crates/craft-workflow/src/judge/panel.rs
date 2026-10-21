@@ -72,10 +72,19 @@ type SeatFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<StepOutcome, WorkflowError>> + Send + 'a>,
 >;
 
-/// One corrective round for a seat whose final message the verdict parser
-/// rejected: the model gets the contract once more, and the parser still
-/// decides. Unparseable a second time is the typed JudgeGate failure.
-const SEAT_REPAIR_MARKER: &str = "\n\n## Verdict format repair\n\nYour previous final message was not the verdict JSON this gate parses. Reply with ONLY this JSON object, quoted keys and all:\n{\"verdict\":\"pass\"|\"fail\",\"issues\":[\"...\"]}\nNo prose, no markdown, nothing else.";
+/// The rounds a seat gets to emit a parseable verdict: the seat re-runs
+/// until the parser accepts it, and this cap is the fail-closed backstop.
+pub const MAX_SEAT_REPAIRS: u32 = 8;
+
+/// The corrective prompt for one seat: the parser's own complaint, so the
+/// model can fix exactly what broke.
+fn repair_marker(detail: &str) -> String {
+    format!(
+        "\n\n## Verdict format repair\n\nThe gate's parser rejected your previous final \
+         message: {detail}\nReply with ONLY this JSON object, quoted keys and all:\n\
+         {{\"verdict\":\"pass\"|\"fail\",\"issues\":[\"...\"]}}\nNo prose, no markdown, nothing else."
+    )
+}
 
 /// One panel of seats run concurrently, merged into the step outcome the
 /// engine settles: pass verdict is a success conclusion, fail verdict an
@@ -87,33 +96,8 @@ pub async fn run_panel<E: StepExecutor + Sync>(
     spec: &JudgeSpec,
 ) -> Result<StepOutcome, WorkflowError> {
     let total = spec.panel.max(1);
-    let mut outcomes = run_seats(executor, &base, total, 0..total, false).await;
-    let unparsed: Vec<usize> = outcomes
-        .iter()
-        .enumerate()
-        .filter(|(_, outcome)| {
-            matches!(outcome, Ok(ok) if ok.conclusion.is_success() && parse_seat(&base.id, &ok.final_message).is_err())
-        })
-        .map(|(index, _)| index)
-        .collect();
-    if !unparsed.is_empty() {
-        let repaired = run_seats(
-            executor,
-            &base,
-            total,
-            unparsed.iter().map(|i| *i as u32),
-            true,
-        )
-        .await;
-        for (slot, mut outcome) in unparsed.into_iter().zip(repaired) {
-            if let Ok(second) = &mut outcome
-                && let Ok(first) = &outcomes[slot]
-            {
-                second.usage = second.usage.saturating_add(first.usage);
-            }
-            outcomes[slot] = outcome;
-        }
-    }
+    let mut outcomes = run_seats(executor, &base, total, (0..total).collect(), None).await;
+    repair_seats(executor, &base, total, &mut outcomes).await;
     let mut parsed: Vec<SeatVerdict> = Vec::with_capacity(outcomes.len());
     let mut total_usage = crate::status::StepUsage::default();
     let mut broken: Option<String> = None;
@@ -146,21 +130,60 @@ pub async fn run_panel<E: StepExecutor + Sync>(
     })
 }
 
-/// Runs the named seat indices concurrently; `repair` appends the verdict
-/// contract once more to those seats' prompts.
+/// Re-runs, until the verdict parses or the cap is spent, every seat whose
+/// run succeeded but whose final message the verdict parser rejected. Each
+/// round carries the parser's complaint; unparseable after the last round
+/// is the typed JudgeGate failure.
+async fn repair_seats<E: StepExecutor + Sync>(
+    executor: &E,
+    base: &StepInputs,
+    total: u32,
+    outcomes: &mut Vec<Result<StepOutcome, WorkflowError>>,
+) {
+    for _ in 0..MAX_SEAT_REPAIRS {
+        let unparsed: Vec<(usize, String)> = outcomes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, outcome)| match outcome {
+                Ok(ok) if ok.conclusion.is_success() => parse_seat(&base.id, &ok.final_message)
+                    .err()
+                    .map(|err| (index, err.to_string())),
+                _ => None,
+            })
+            .collect();
+        if unparsed.is_empty() {
+            return;
+        }
+        let indices: Vec<u32> = unparsed.iter().map(|(index, _)| *index as u32).collect();
+        let details: Vec<String> = unparsed.iter().map(|(_, detail)| detail.clone()).collect();
+        let slots: Vec<usize> = unparsed.iter().map(|(index, _)| *index).collect();
+        let repaired = run_seats(executor, base, total, indices, Some(&details)).await;
+        for (slot, mut outcome) in slots.into_iter().zip(repaired) {
+            if let Ok(second) = &mut outcome
+                && let Ok(first) = &outcomes[slot]
+            {
+                second.usage = second.usage.saturating_add(first.usage);
+            }
+            outcomes[slot] = outcome;
+        }
+    }
+}
+
+/// Runs the named seat indices concurrently; `repairs[i]` appends that
+/// parser complaint's corrective prompt to seat `i`'s prompt.
 async fn run_seats<E: StepExecutor + Sync>(
     executor: &E,
     base: &StepInputs,
     total: u32,
-    indices: impl Iterator<Item = u32>,
-    repair: bool,
+    indices: Vec<u32>,
+    repairs: Option<&[String]>,
 ) -> Vec<Result<StepOutcome, WorkflowError>> {
     let mut seats: Vec<SeatFuture<'_>> = Vec::new();
-    for index in indices {
+    for (position, index) in indices.into_iter().enumerate() {
         let mut inputs = base.clone();
         inputs.prompt.push_str(&seat_marker(index + 1, total));
-        if repair {
-            inputs.prompt.push_str(SEAT_REPAIR_MARKER);
+        if let Some(details) = repairs {
+            inputs.prompt.push_str(&repair_marker(&details[position]));
         }
         seats.push(Box::pin(executor.execute(inputs)));
     }

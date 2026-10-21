@@ -72,6 +72,11 @@ type SeatFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<StepOutcome, WorkflowError>> + Send + 'a>,
 >;
 
+/// One corrective round for a seat whose final message the verdict parser
+/// rejected: the model gets the contract once more, and the parser still
+/// decides. Unparseable a second time is the typed JudgeGate failure.
+const SEAT_REPAIR_MARKER: &str = "\n\n## Verdict format repair\n\nYour previous final message was not the verdict JSON this gate parses. Reply with ONLY this JSON object, quoted keys and all:\n{\"verdict\":\"pass\"|\"fail\",\"issues\":[\"...\"]}\nNo prose, no markdown, nothing else.";
+
 /// One panel of seats run concurrently, merged into the step outcome the
 /// engine settles: pass verdict is a success conclusion, fail verdict an
 /// error conclusion, a seat that failed to run (or a malformed verdict)
@@ -81,21 +86,40 @@ pub async fn run_panel<E: StepExecutor + Sync>(
     base: StepInputs,
     spec: &JudgeSpec,
 ) -> Result<StepOutcome, WorkflowError> {
-    let mut seats: Vec<SeatFuture<'_>> = Vec::new();
-    for index in 0..spec.panel.max(1) {
-        let mut inputs = base.clone();
-        inputs
-            .prompt
-            .push_str(&seat_marker(index + 1, spec.panel.max(1)));
-        seats.push(Box::pin(executor.execute(inputs)));
+    let total = spec.panel.max(1);
+    let mut outcomes = run_seats(executor, &base, total, 0..total, false).await;
+    let unparsed: Vec<usize> = outcomes
+        .iter()
+        .enumerate()
+        .filter(|(_, outcome)| {
+            matches!(outcome, Ok(ok) if ok.conclusion.is_success() && parse_seat(&base.id, &ok.final_message).is_err())
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if !unparsed.is_empty() {
+        let repaired = run_seats(
+            executor,
+            &base,
+            total,
+            unparsed.iter().map(|i| *i as u32),
+            true,
+        )
+        .await;
+        for (slot, mut outcome) in unparsed.into_iter().zip(repaired) {
+            if let Ok(second) = &mut outcome
+                && let Ok(first) = &outcomes[slot]
+            {
+                second.usage = second.usage.saturating_add(first.usage);
+            }
+            outcomes[slot] = outcome;
+        }
     }
-    let outcomes = futures::future::join_all(seats).await;
     let mut parsed: Vec<SeatVerdict> = Vec::with_capacity(outcomes.len());
-    let mut total = crate::status::StepUsage::default();
+    let mut total_usage = crate::status::StepUsage::default();
     let mut broken: Option<String> = None;
     for outcome in outcomes {
         let outcome = outcome?;
-        total = total.saturating_add(outcome.usage);
+        total_usage = total_usage.saturating_add(outcome.usage);
         if !outcome.conclusion.is_success() {
             broken = Some(outcome.final_message);
             break;
@@ -105,7 +129,7 @@ pub async fn run_panel<E: StepExecutor + Sync>(
     if let Some(detail) = broken {
         return Ok(StepOutcome {
             conclusion: StepConclusion::Error,
-            usage: total,
+            usage: total_usage,
             final_message: detail,
         });
     }
@@ -117,9 +141,30 @@ pub async fn run_panel<E: StepExecutor + Sync>(
     };
     Ok(StepOutcome {
         conclusion,
-        usage: total,
+        usage: total_usage,
         final_message: merged_json(&merged),
     })
+}
+
+/// Runs the named seat indices concurrently; `repair` appends the verdict
+/// contract once more to those seats' prompts.
+async fn run_seats<E: StepExecutor + Sync>(
+    executor: &E,
+    base: &StepInputs,
+    total: u32,
+    indices: impl Iterator<Item = u32>,
+    repair: bool,
+) -> Vec<Result<StepOutcome, WorkflowError>> {
+    let mut seats: Vec<SeatFuture<'_>> = Vec::new();
+    for index in indices {
+        let mut inputs = base.clone();
+        inputs.prompt.push_str(&seat_marker(index + 1, total));
+        if repair {
+            inputs.prompt.push_str(SEAT_REPAIR_MARKER);
+        }
+        seats.push(Box::pin(executor.execute(inputs)));
+    }
+    futures::future::join_all(seats).await
 }
 
 fn seat_marker(index: u32, total: u32) -> String {

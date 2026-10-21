@@ -30,8 +30,10 @@ fn test_workspace(label: &str) -> Result<std::path::PathBuf, String> {
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 
 // The whole workflow — a producer run plus every seat attempt — under one
-// bound; a stalled gateway is a broken corpus, not a hang.
-const LIVE_BOUND: std::time::Duration = std::time::Duration::from_secs(600);
+// bound; a stalled gateway is a broken corpus, not a hang. Generous on
+// purpose: the BYOK endpoint serves thinking models whose turns run for
+// minutes each, and this workflow runs several.
+const LIVE_BOUND: std::time::Duration = std::time::Duration::from_secs(3600);
 
 // The forced malformed verdicts: unquoted keys, the shape a model emits
 // when it improvises the contract.

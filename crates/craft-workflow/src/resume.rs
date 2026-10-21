@@ -83,6 +83,23 @@ pub(crate) fn fold(
             JournalEvent::StepRetried { id, attempt, .. } => {
                 fold_retried(&site, &mut state, id, *attempt)?;
             }
+            JournalEvent::FeedbackRetried {
+                id,
+                judge,
+                attempt,
+                issues,
+                usage,
+                ..
+            } => {
+                let row = crate::feedback::FeedbackRow {
+                    producer: id,
+                    judge,
+                    attempt: *attempt,
+                    issues,
+                    usage,
+                };
+                crate::feedback::fold_feedback(&site, &mut state, row)?;
+            }
             JournalEvent::StepFinished {
                 id,
                 input_hash,
@@ -113,14 +130,14 @@ pub(crate) fn fold(
 
 /// Where a replayed event sits in the journal: the plan it is checked
 /// against and the error context for a broken row.
-struct FoldSite<'a> {
-    plan: &'a WorkflowPlan,
+pub(crate) struct FoldSite<'a> {
+    pub(crate) plan: &'a WorkflowPlan,
     path: &'a str,
     line: u64,
 }
 
 impl FoldSite<'_> {
-    fn corrupt(&self, detail: String) -> WorkflowError {
+    pub(crate) fn corrupt(&self, detail: String) -> WorkflowError {
         WorkflowError::JournalParse {
             path: self.path.to_string(),
             line: self.line,
@@ -129,7 +146,7 @@ impl FoldSite<'_> {
     }
 
     /// Every step event must name a step in the plan.
-    fn require_step(&self, id: &str) -> Result<(), WorkflowError> {
+    pub(crate) fn require_step(&self, id: &str) -> Result<(), WorkflowError> {
         if self.plan.step(id).is_none() {
             return Err(self.corrupt(format!("journal names unknown step `{id}`")));
         }
@@ -201,7 +218,7 @@ fn fold_finished(
         }
     }
     let previews = previews_for(spec, |need| state.settled_preview(need));
-    let inputs = assemble_step(site.plan, args, spec, &previews);
+    let inputs = assemble_step(site.plan, args, spec, &previews, &state.feedback_text(id));
     if inputs.input_hash() != input_hash {
         return Err(WorkflowError::Divergence {
             detail: format!(

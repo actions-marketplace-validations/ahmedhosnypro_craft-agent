@@ -46,13 +46,18 @@ KNOWN_FIELDS=(
   promptMode
   tools
   disallowedTools
+  denyRead
+  denyWrite
   maxTurns
   timeoutSecs
   background
   agentsMd
 )
 TOOLS_FIELDS=(tools disallowedTools)
+GLOBS_FIELDS=(denyRead denyWrite)
 REGISTRY=(bash read_file write_file edit_file glob grep gh spawn_agent spawn_agents)
+GLOB_LIST_CAP=16
+GLOB_CHAR_CAP=128
 # Enumerated character classes keep the matches locale-independent.
 NAME_RE='^[abcdefghijklmnopqrstuvwxyz][abcdefghijklmnopqrstuvwxyz0123456789-]{0,63}$'
 MODEL_RE='^[abcdefghijklmnopqrstuvwxyz0123456789][abcdefghijklmnopqrstuvwxyz0123456789._/-]*$'
@@ -70,6 +75,27 @@ trap 'rm -rf "$work"' EXIT INT TERM
 # fail_rule <file> <line> <rule> <label> <message>
 fail_rule() {
   printf '%s:%s: %s %s: %s\n' "$1" "$2" "$3" "$4" "$5" >&2
+}
+
+# glob_shape_ok <glob> — workspace-relative, `**` only as a whole
+# segment; mirrors the engine-side glob validator.
+glob_shape_ok() {
+  local glob="$1" seg segs
+  [ -n "$glob" ] && [ "${#glob}" -le "$GLOB_CHAR_CAP" ] || return 1
+  case "$glob" in
+    /*) return 1 ;;
+    *..*) return 1 ;;
+  esac
+  segs="${glob//\// }"
+  for seg in $segs; do
+    [ -n "$seg" ] || return 1
+    [ "$seg" = "**" ] && continue
+    [[ "$seg" =~ ^[a-zA-Z0-9._*-]+$ ]] || return 1
+    case "$seg" in
+      *\**) [ "$seg" = "**" ] || return 1 ;;
+    esac
+  done
+  return 0
 }
 
 # effective_lines <file> — identical line accounting to the file-length
@@ -326,6 +352,40 @@ validate_file() {
     done
   done
 
+  local gf graw ginner gok
+  for gf in "${GLOBS_FIELDS[@]}"; do
+    [ -n "${values[$gf]+x}" ] || continue
+    graw="${values[$gf]}"
+    ginner="$graw"
+    if [[ "$graw" == \[*\] ]]; then
+      ginner="${graw:1:${#graw}-2}"
+    elif [[ "$graw" == \[* ]] || [[ "$graw" == *\] ]]; then
+      fail_rule "$file" "${lines[$gf]}" GLOBS01 deny-globs "unbalanced bracket list in $gf"
+      found=1
+      continue
+    fi
+    local gtoks=()
+    read -ra gtoks <<< "$(printf '%s' "$ginner" | tr ',' ' ')"
+    if [ "${#gtoks[@]}" -eq 0 ] || [ -z "${gtoks[0]}" ]; then
+      fail_rule "$file" "${lines[$gf]}" GLOBS01 deny-globs "empty glob list in $gf"
+      found=1
+      continue
+    fi
+    if [ "${#gtoks[@]}" -gt "$GLOB_LIST_CAP" ]; then
+      fail_rule "$file" "${lines[$gf]}" GLOBS01 deny-globs \
+        "$gf lists ${#gtoks[@]} globs (cap ${GLOB_LIST_CAP})"
+      found=1
+      continue
+    fi
+    for tok in "${gtoks[@]}"; do
+      if ! glob_shape_ok "$tok"; then
+        fail_rule "$file" "${lines[$gf]}" GLOBS01 deny-globs \
+          "'$tok' is not a workspace-relative glob in $gf"
+        found=1
+      fi
+    done
+  done
+
   prc=0
   sed -n "$((close + 1)),\$p" "$file" > "$work/body" || prc=$?
   if [ "$prc" -ne 0 ]; then
@@ -389,6 +449,7 @@ check_paths() {
 CANARIES=(
   good-researcher.md
   good-mcp-tokens.md
+  good-deny-scopes.md
   bad-fm01-frontmatter.md
   bad-fm02-missing-description.md
   bad-fm03-name-charset.md
@@ -399,6 +460,8 @@ CANARIES=(
   bad-md02-body-long.md
   bad-tools01-unknown-id.md
   bad-model01-bad-model.md
+  bad-globs01-absolute.md
+  bad-globs01-traversal.md
 )
 EXPECT=(
   "FM01 bad-fm01-frontmatter.md"
@@ -412,6 +475,8 @@ EXPECT=(
   "TOOLS01 bad-tools01-unknown-id.md"
   "TOOLS01 bad-tools01-mcp-token.md"
   "MODEL01 bad-model01-bad-model.md"
+  "GLOBS01 bad-globs01-absolute.md"
+  "GLOBS01 bad-globs01-traversal.md"
 )
 
 run_selftest() {

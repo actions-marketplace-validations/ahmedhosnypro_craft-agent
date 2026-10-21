@@ -178,7 +178,10 @@ fn execute_workflow_inner(
     summary::emit_workflow_summary(
         &env,
         cli.output_format,
-        &report,
+        summary::WorkflowRun {
+            report: &report,
+            sessions_dir: &run_dir.join("sessions"),
+        },
         summary::SummaryFacts {
             mission: "workflow",
             model: env_config.model.clone(),
@@ -187,7 +190,6 @@ fn execute_workflow_inner(
             token_budget: Some(cli.max_tokens.unwrap_or(plan_spec.limits.max_total_tokens)),
             rows: redaction::summary_rows(redactor),
         },
-        &run_dir.join("sessions"),
     );
     Ok(report.exit_code)
 }

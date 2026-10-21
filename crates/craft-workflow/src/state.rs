@@ -27,6 +27,10 @@ pub(crate) struct EngineState {
     pub budget_refused: bool,
     pub pool: Pool,
     pub total_usage: StepUsage,
+    /// Producer id -> judge issues appended to its repair prompt.
+    pub feedback: BTreeMap<String, Vec<String>>,
+    /// Producer id -> feedback attempts spent.
+    pub feedback_attempts: BTreeMap<String, u32>,
 }
 
 impl EngineState {
@@ -55,7 +59,14 @@ impl EngineState {
             budget_refused: false,
             pool: Pool::new(plan.limits),
             total_usage: StepUsage::default(),
+            feedback: BTreeMap::new(),
+            feedback_attempts: BTreeMap::new(),
         }
+    }
+
+    /// The feedback issues appended to a step's repair prompt.
+    pub(crate) fn feedback_text(&self, id: &str) -> Vec<String> {
+        self.feedback.get(id).cloned().unwrap_or_default()
     }
 
     pub(crate) fn settled_preview(&self, id: &str) -> Option<String> {

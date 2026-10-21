@@ -10,7 +10,6 @@ use crate::pathguard::{PathCtx, resolve_read, sensitive_reason};
 use crate::schema::{Prop, Schema};
 use crate::tool::{Tool, ToolCtx, ToolLimits};
 use crate::util;
-use crate::walk::walk_files;
 
 pub const GLOB_PROPS: &[Prop] = &[
     Prop {
@@ -57,7 +56,6 @@ impl GlobTool {
 
     fn try_execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolStream, ToolError> {
         let input = parse_args(args, &self.limits)?;
-        let root = ctx.workspace_root().to_path_buf();
         let scope = self.resolve_scope(ctx, &input.scope)?;
         let matcher = globset::GlobBuilder::new(&input.pattern)
             .literal_separator(true)
@@ -68,7 +66,11 @@ impl GlobTool {
             })?
             .compile_matcher();
 
-        let (mut hits, outcome) = self.collect(&scope, &root, &matcher)?;
+        let target = Target {
+            scope,
+            root: ctx.workspace_root().to_path_buf(),
+        };
+        let (mut hits, outcome) = self.collect(ctx, &target, &matcher)?;
         hits.sort_unstable();
         Ok(event::result_stream(render(
             &hits,
@@ -78,29 +80,35 @@ impl GlobTool {
     }
 
     /// The matches under `scope`: a lone file is tested against the
-    /// pattern itself, a directory is walked.
+    /// pattern itself, a directory is walked. Denied paths are never
+    /// visited.
     fn collect(
         &self,
-        scope: &std::path::Path,
-        root: &std::path::Path,
+        ctx: &ToolCtx,
+        target: &Target,
         matcher: &globset::GlobMatcher,
     ) -> Result<(Vec<String>, crate::walk::WalkOutcome), ToolError> {
+        let scope = &target.scope;
         let scope_meta = std::fs::metadata(scope).map_err(|_| ToolError::NotFound {
             path: display(scope),
         })?;
         let mut hits: Vec<String> = Vec::new();
         if scope_meta.is_file() {
             let outcome = crate::walk::WalkOutcome::default();
+            if let Some(glob) = ctx.denies_read(scope) {
+                return Err(crate::scope::denial("glob", &display(scope), &glob, "read"));
+            }
             let base = scope.parent().unwrap_or(scope);
             if let Some(rel) = rel_to(scope, base)
                 && matcher.is_match(&rel)
             {
-                hits.push(display_rel(scope, root));
+                hits.push(display_rel(scope, &target.root));
             }
             return Ok((hits, outcome));
         }
         let limits = self.limits;
-        let outcome = walk_files(
+        let admit = |path: &std::path::Path| ctx.denies_read(path).is_none();
+        let outcome = crate::walk::walk_filtered(
             scope,
             limits.walk_max_entries,
             limits.walk_max_depth,
@@ -108,13 +116,20 @@ impl GlobTool {
                 if let Some(rel) = rel_to(&path, scope)
                     && matcher.is_match(&rel)
                 {
-                    hits.push(display_rel(&path, root));
+                    hits.push(display_rel(&path, &target.root));
                 }
                 hits.len() < limits.glob_max_results
             },
+            &admit,
         )?;
         Ok((hits, outcome))
     }
+}
+
+/// The searched directory and the workspace its results are reported against.
+struct Target {
+    scope: std::path::PathBuf,
+    root: std::path::PathBuf,
 }
 
 struct GlobArgs {

@@ -13,6 +13,7 @@ pub use fixtures::{fake_child_env, fake_gh, tmp_ws, write, write_bytes};
 use std::path::Path;
 use std::time::Duration;
 
+use craft_tools::scope::ScopeDenies;
 use craft_tools::{ToolCtx, ToolError, ToolEvent, ToolLimits, ToolStream};
 
 pub fn fast_limits() -> ToolLimits {
@@ -49,7 +50,7 @@ pub fn ctx_env(
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
         .collect();
-    ToolCtx::with_env(ws.to_path_buf(), env)
+    ToolCtx::with_env_scopes(ws.to_path_buf(), env, ScopeDenies::default())
 }
 
 pub async fn run(stream: ToolStream) -> Vec<Result<ToolEvent, ToolError>> {

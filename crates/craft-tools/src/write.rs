@@ -41,29 +41,8 @@ impl WriteFileTool {
         Self { limits }
     }
 
-    fn try_execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolStream, ToolError> {
-        let args = util::ToolArgs::new(args, "write_file");
-        args.reject_unknown_keys(&["path", "content", "mode"])?;
-        let input = args.arg_str_bounded("path", self.limits.max_path_bytes)?;
-        let content = args.arg_str("content")?;
-        let mode = args.arg_opt_str("mode", 32)?;
-        let append = match mode.as_deref() {
-            None => false,
-            Some("overwrite") => false,
-            Some("append") => true,
-            Some(_) => {
-                return Err(ToolError::InvalidArgs {
-                    tool: "write_file".to_string(),
-                    msg: "mode must be \"overwrite\" or \"append\"".to_string(),
-                });
-            }
-        };
-        if content.len() > self.limits.write_cap {
-            return Err(ToolError::WriteTooLarge {
-                size: content.len(),
-                limit: self.limits.write_cap,
-            });
-        }
+    /// Resolve the target, refusing a sensitive path or a scope-denied one.
+    fn resolve_target(&self, ctx: &ToolCtx, input: &str) -> Result<std::path::PathBuf, ToolError> {
         let abs = resolve_within(
             &PathCtx::new(
                 "write_file",
@@ -71,7 +50,7 @@ impl WriteFileTool {
                 &[],
                 self.limits.max_path_bytes,
             ),
-            &input,
+            input,
         )?;
         if let Some(reason) = sensitive_reason(&abs) {
             return Err(ToolError::SensitivePath {
@@ -79,33 +58,90 @@ impl WriteFileTool {
                 reason,
             });
         }
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| ToolError::Io {
-                op: "create directories",
-                msg: e.to_string(),
-            })?;
-            let canon = std::fs::canonicalize(parent).map_err(|e| ToolError::Io {
-                op: "create directories",
-                msg: e.to_string(),
-            })?;
-            let canon_root = std::fs::canonicalize(ctx.workspace_root())
-                .unwrap_or_else(|_| ctx.workspace_root().to_path_buf());
-            if !canon.starts_with(&canon_root) {
-                return Err(ToolError::EscapesWorkspace {
-                    path: display(&abs),
-                    allowed: display(ctx.workspace_root()),
-                });
-            }
+        if let Some(glob) = ctx.denies_write(&abs) {
+            return Err(crate::scope::denial(
+                "write_file",
+                &display(&abs),
+                &glob,
+                "write",
+            ));
         }
-        let note = if append {
-            write_bytes(&abs, ctx, content.as_bytes(), &open_plan(true))?;
-            format!("appended {} bytes to {input}", content.len())
+        Ok(abs)
+    }
+
+    fn try_execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolStream, ToolError> {
+        let input = parse_args(args, &self.limits)?;
+        let abs = self.resolve_target(ctx, &input.path)?;
+        guard_parent(&abs, ctx)?;
+        let note = if input.append {
+            write_bytes(&abs, ctx, input.content.as_bytes(), &open_plan(true))?;
+            format!("appended {} bytes to {}", input.content.len(), input.path)
         } else {
-            write_bytes(&abs, ctx, content.as_bytes(), &open_plan(false))?;
-            format!("wrote {} bytes to {input}", content.len())
+            write_bytes(&abs, ctx, input.content.as_bytes(), &open_plan(false))?;
+            format!("wrote {} bytes to {}", input.content.len(), input.path)
         };
         Ok(event::result_stream(note))
     }
+}
+
+struct WriteArgs {
+    path: String,
+    content: String,
+    append: bool,
+}
+
+fn parse_args(args: &Value, limits: &ToolLimits) -> Result<WriteArgs, ToolError> {
+    let args = util::ToolArgs::new(args, "write_file");
+    args.reject_unknown_keys(&["path", "content", "mode"])?;
+    let path = args.arg_str_bounded("path", limits.max_path_bytes)?;
+    let content = args.arg_str("content")?;
+    let append = match args.arg_opt_str("mode", 32)?.as_deref() {
+        None => false,
+        Some("overwrite") => false,
+        Some("append") => true,
+        Some(_) => {
+            return Err(ToolError::InvalidArgs {
+                tool: "write_file".to_string(),
+                msg: "mode must be \"overwrite\" or \"append\"".to_string(),
+            });
+        }
+    };
+    if content.len() > limits.write_cap {
+        return Err(ToolError::WriteTooLarge {
+            size: content.len(),
+            limit: limits.write_cap,
+        });
+    }
+    Ok(WriteArgs {
+        path,
+        content,
+        append,
+    })
+}
+
+/// Create the missing parents, then refuse a target whose canonical
+/// parent escapes the workspace root.
+fn guard_parent(abs: &std::path::Path, ctx: &ToolCtx) -> Result<(), ToolError> {
+    let Some(parent) = abs.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).map_err(|e| ToolError::Io {
+        op: "create directories",
+        msg: e.to_string(),
+    })?;
+    let canon = std::fs::canonicalize(parent).map_err(|e| ToolError::Io {
+        op: "create directories",
+        msg: e.to_string(),
+    })?;
+    let canon_root = std::fs::canonicalize(ctx.workspace_root())
+        .unwrap_or_else(|_| ctx.workspace_root().to_path_buf());
+    if !canon.starts_with(&canon_root) {
+        return Err(ToolError::EscapesWorkspace {
+            path: display(abs),
+            allowed: display(ctx.workspace_root()),
+        });
+    }
+    Ok(())
 }
 
 /// The guarded-open mode and the op labels for one write flavor.

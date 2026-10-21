@@ -5,6 +5,7 @@
 
 pub mod bash;
 pub mod edit;
+pub mod edit_match;
 pub mod egress;
 pub mod envscrub;
 pub mod error;
@@ -13,12 +14,14 @@ pub mod gh;
 pub mod ghgate;
 pub mod glob;
 pub mod grep;
+pub mod grep_report;
 pub mod lineend;
 pub mod pathguard;
 pub mod proc;
 pub mod read;
 pub mod registry;
 pub mod schema;
+pub mod scope;
 pub mod tool;
 pub mod util;
 pub mod walk;

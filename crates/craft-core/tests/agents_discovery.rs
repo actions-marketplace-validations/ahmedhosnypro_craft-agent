@@ -227,7 +227,14 @@ fn seeded_agent_files_load_clean() {
     }
     assert_eq!(
         catalog.names(),
-        ["docs-writer", "pr-analyst", "repo-scout"],
+        [
+            "blind-implementer",
+            "docs-writer",
+            "pr-analyst",
+            "repo-scout",
+            "reviewer",
+            "spec-writer",
+        ],
         "every seeded agent must load clean: {:?}",
         catalog.skipped
     );

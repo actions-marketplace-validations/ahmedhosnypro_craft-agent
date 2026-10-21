@@ -68,33 +68,46 @@ fn push_hex_byte(out: &mut String, b: u8, upper: bool) {
 /// Base64 over the standard or URL-safe alphabet, with or without
 /// padding.
 fn base64_encode(s: &str, url_safe: bool, padded: bool) -> String {
-    const STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let table = if url_safe { URL } else { STD };
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(table[((n >> 18) & 0x3F) as usize] as char);
-        out.push(table[((n >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(table[((n >> 6) & 0x3F) as usize] as char);
-        }
-        if chunk.len() > 2 {
-            out.push(table[(n & 0x3F) as usize] as char);
-        }
+        push_triplet(&mut out, chunk, base64_table(url_safe));
     }
-    if padded {
-        match bytes.len() % 3 {
-            1 => out.push_str("=="),
-            2 => out.push('='),
-            _ => {}
-        }
-    }
+    push_tail(&mut out, bytes.len(), padded);
     out
+}
+
+fn base64_table(url_safe: bool) -> &'static [u8; 64] {
+    const STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    if url_safe { URL } else { STD }
+}
+
+fn push_triplet(out: &mut String, chunk: &[u8], table: &[u8; 64]) {
+    let b0 = chunk[0] as u32;
+    let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+    let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+    let n = (b0 << 16) | (b1 << 8) | b2;
+    out.push(table[((n >> 18) & 0x3F) as usize] as char);
+    out.push(table[((n >> 12) & 0x3F) as usize] as char);
+    if chunk.len() > 1 {
+        out.push(table[((n >> 6) & 0x3F) as usize] as char);
+    }
+    if chunk.len() > 2 {
+        out.push(table[(n & 0x3F) as usize] as char);
+    }
+}
+
+/// The `=` fill for a 1- or 2-byte tail, only when padding is on.
+fn push_tail(out: &mut String, len: usize, padded: bool) {
+    if !padded {
+        return;
+    }
+    match len % 3 {
+        1 => out.push_str("=="),
+        2 => out.push('='),
+        _ => {}
+    }
 }
 
 #[cfg(test)]

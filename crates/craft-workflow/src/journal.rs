@@ -36,6 +36,24 @@ pub enum JournalEvent {
         id: String,
         attempt: u32,
     },
+    /// A judge verdict fail that requeues the producing step with the
+    /// issues appended to its prompt; the producer settles again and the
+    /// judge re-runs. Carries the failed gate's issues and the requeued
+    /// flight's usage so a crash-resume replays the identical feedback
+    /// prompt and the same totals.
+    FeedbackRetried {
+        seq: u64,
+        /// The producing step requeued.
+        id: String,
+        /// The judge step that ruled.
+        judge: String,
+        /// 1..=the judge's max-feedback.
+        attempt: u32,
+        /// The merged failing issues.
+        issues: Vec<String>,
+        /// The requeued flight's usage.
+        usage: StepUsage,
+    },
     StepFinished {
         seq: u64,
         id: String,
@@ -63,6 +81,7 @@ impl JournalEvent {
             Self::RunStarted { seq, .. }
             | Self::StepStarted { seq, .. }
             | Self::StepRetried { seq, .. }
+            | Self::FeedbackRetried { seq, .. }
             | Self::StepFinished { seq, .. }
             | Self::StepSkipped { seq, .. }
             | Self::RunFinished { seq, .. } => *seq,

@@ -68,6 +68,52 @@ fn zero_usage() -> Usage {
     }
 }
 
+fn scripted_provider(turns: Vec<Turn>) -> Arc<ScriptedProvider> {
+    Arc::new(ScriptedProvider {
+        turns: Mutex::new(VecDeque::from(turns)),
+    })
+}
+
+fn tool_call_turn(tool: &str, args: &str) -> Turn {
+    vec![
+        Ok(ModelEvent::ToolCallDelta {
+            index: 0,
+            id: Some(String::from("c1")),
+            name: Some(String::from(tool)),
+            arguments: String::from(args),
+        }),
+        Ok(ModelEvent::TurnFinished {
+            stop_reason: StopReason::ToolUse,
+            usage: zero_usage(),
+        }),
+    ]
+}
+
+fn text_turn(text: &str) -> Turn {
+    vec![
+        Ok(ModelEvent::TextDelta {
+            text: String::from(text),
+        }),
+        Ok(ModelEvent::TurnFinished {
+            stop_reason: StopReason::EndTurn,
+            usage: zero_usage(),
+        }),
+    ]
+}
+
+fn summary_env(target: &std::path::Path) -> EnvMap {
+    HashMap::from([
+        (
+            String::from("GITHUB_STEP_SUMMARY"),
+            target.display().to_string(),
+        ),
+        (
+            String::from("OPENAI_API_KEY"),
+            String::from("sk-sentinel-never-in-summaries"),
+        ),
+    ])
+}
+
 #[tokio::test]
 async fn a_real_run_summary_carries_its_deliverables() {
     let dir = PathBuf::from(format!(
@@ -80,31 +126,10 @@ async fn a_real_run_summary_carries_its_deliverables() {
     let session_path = dir.join("session.jsonl");
     let target = dir.join("summary.md");
 
-    let provider = Arc::new(ScriptedProvider {
-        turns: Mutex::new(VecDeque::from(vec![
-            vec![
-                Ok(ModelEvent::ToolCallDelta {
-                    index: 0,
-                    id: Some(String::from("c1")),
-                    name: Some(String::from("probe")),
-                    arguments: String::from("{}"),
-                }),
-                Ok(ModelEvent::TurnFinished {
-                    stop_reason: StopReason::ToolUse,
-                    usage: zero_usage(),
-                }),
-            ],
-            vec![
-                Ok(ModelEvent::TextDelta {
-                    text: String::from("opened the PR and finished"),
-                }),
-                Ok(ModelEvent::TurnFinished {
-                    stop_reason: StopReason::EndTurn,
-                    usage: zero_usage(),
-                }),
-            ],
-        ])),
-    });
+    let provider = scripted_provider(vec![
+        tool_call_turn("probe", "{}"),
+        text_turn("opened the PR and finished"),
+    ]);
     let mut registry = Registry::new(ToolLimits::default());
     registry.register(Box::new(ProbeTool {
         output: String::from("created https://github.com/octo/app/pull/9 — see the diff"),
@@ -117,18 +142,8 @@ async fn a_real_run_summary_carries_its_deliverables() {
     let outcome = runner.run("open the PR", |_| {}).await;
     assert_eq!(outcome.exit_code(), 0, "the scripted run completes");
 
-    let env: EnvMap = HashMap::from([
-        (
-            String::from("GITHUB_STEP_SUMMARY"),
-            target.display().to_string(),
-        ),
-        (
-            String::from("OPENAI_API_KEY"),
-            String::from("sk-sentinel-never-in-summaries"),
-        ),
-    ]);
     summary::emit_run_summary(
-        &env,
+        &summary_env(&target),
         OutputFormat::Plain,
         &outcome,
         SummaryFacts {

@@ -7,13 +7,19 @@ pub mod args;
 pub mod assemble;
 pub mod engine;
 pub mod error;
+pub mod feedback;
+pub mod gates;
 pub mod graph;
 pub mod hash;
 pub mod journal;
+pub mod judge;
 pub mod plan;
+pub mod plan_file;
 pub mod pool;
 pub mod resume;
 pub mod run;
+pub mod scope;
+pub mod settle;
 pub mod state;
 pub mod status;
 pub mod steps;
@@ -26,8 +32,12 @@ pub use assemble::{StepInputs, assemble_step};
 pub use engine::{StepExecutor, StepOutcome};
 pub use error::WorkflowError;
 pub use journal::{Journal, JournalEvent};
-pub use plan::{ArgKind, ArgSpec, ArgValue, Limits, OnFailure, StepSpec, WorkflowPlan};
+pub use plan::{
+    ArgKind, ArgSpec, ArgValue, JudgeMerge, JudgeSpec, Limits, OnFailure, StepKind, StepSpec,
+    WorkflowPlan,
+};
 pub use run::{resume_workflow, run_workflow};
+pub use scope::Scope;
 pub use status::{
     RunConclusion, SkipReason, StepConclusion, StepReport, StepStatus, StepUsage, WorkflowReport,
 };

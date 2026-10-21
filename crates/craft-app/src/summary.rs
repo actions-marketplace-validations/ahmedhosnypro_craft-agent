@@ -78,20 +78,30 @@ pub fn emit_run_summary(
     );
 }
 
+/// The workflow run being summarized: its report and the directory its
+/// step sessions live in.
+pub struct WorkflowRun<'a> {
+    pub report: &'a WorkflowReport,
+    pub sessions_dir: &'a Path,
+}
+
 /// The workflow mission seam: same shape plus the per-step table, with
 /// deliverables drawn from every settled step's session.
 pub fn emit_workflow_summary(
     env: &EnvMap,
     format: OutputFormat,
-    report: &WorkflowReport,
+    run: WorkflowRun<'_>,
     facts: SummaryFacts,
-    sessions_dir: &Path,
 ) {
     let Some(target) = summary_target(env) else {
         return;
     };
-    let content = step_content(report, sessions_dir);
-    publish(&target, format, &render_workflow(report, facts, content));
+    let content = step_content(run.report, run.sessions_dir);
+    publish(
+        &target,
+        format,
+        &render_workflow(run.report, facts, content),
+    );
 }
 
 /// The digest mission seam: the summary links the digest markdown path.
@@ -117,32 +127,11 @@ fn step_content(report: &WorkflowReport, sessions_dir: &Path) -> StepContent {
         final_message: None,
         tail: None,
     };
-    let mut settled: Vec<&StepReport> = Vec::new();
-    for step in &report.steps {
-        let StepStatus::Settled { .. } = step.status else {
-            continue;
-        };
-        settled.push(step);
-        let path = sessions_dir.join(format!("{}.jsonl", step.id));
-        let Some(messages) = load_session(Some(&path)) else {
-            continue;
-        };
-        for item in deliverables(&messages) {
-            if content.deliverables.len() >= DELIVERABLES_CAP {
-                break;
-            }
-            if !content.deliverables.contains(&item) {
-                content.deliverables.push(item);
-            }
-        }
+    let settled = settled_steps(report);
+    for step in &settled {
+        gather_step_deliverables(step, sessions_dir, &mut content.deliverables);
     }
-    let tail_step = report
-        .steps
-        .iter()
-        .rev()
-        .find(|step| Some(step.id.as_str()) == report.failed_step.as_deref())
-        .or_else(|| settled.last().copied());
-    let Some(step) = tail_step else {
+    let Some(step) = tail_step(report, &settled) else {
         return content;
     };
     let path = sessions_dir.join(format!("{}.jsonl", step.id));
@@ -153,6 +142,42 @@ fn step_content(report: &WorkflowReport, sessions_dir: &Path) -> StepContent {
         content.final_message = Some(cap_chars(final_message, FINAL_MESSAGE_CAP).to_string());
     }
     content
+}
+
+/// Every settled step, in report order.
+fn settled_steps(report: &WorkflowReport) -> Vec<&StepReport> {
+    report
+        .steps
+        .iter()
+        .filter(|step| matches!(step.status, StepStatus::Settled { .. }))
+        .collect()
+}
+
+/// One settled step's deliverables, appended under the cap, deduped.
+fn gather_step_deliverables(step: &StepReport, sessions_dir: &Path, into: &mut Vec<String>) {
+    let path = sessions_dir.join(format!("{}.jsonl", step.id));
+    let Some(messages) = load_session(Some(&path)) else {
+        return;
+    };
+    for item in deliverables(&messages) {
+        if into.len() >= DELIVERABLES_CAP {
+            break;
+        }
+        if !into.contains(&item) {
+            into.push(item);
+        }
+    }
+}
+
+/// The step whose session shows in the tail: the failed one when the
+/// report names it, else the last settled step.
+fn tail_step<'a>(report: &'a WorkflowReport, settled: &[&'a StepReport]) -> Option<&'a StepReport> {
+    report
+        .steps
+        .iter()
+        .rev()
+        .find(|step| Some(step.id.as_str()) == report.failed_step.as_deref())
+        .or_else(|| settled.last().copied())
 }
 
 fn load_session(path: Option<&Path>) -> Option<Vec<ChatMessage>> {

@@ -3,11 +3,8 @@
 use std::collections::BTreeSet;
 
 use crate::error::WorkflowError;
-use crate::plan::{
-    DEFAULT_STEP_MAX_TURNS, MAX_RETRIES_CEILING, MAX_STEP_TURNS_CEILING, OnFailure, STEP_HARD_CAP,
-    StepSpec, valid_key,
-};
-use crate::validate::parse_u64;
+use crate::gates::{self, check_gates};
+use crate::plan::{STEP_HARD_CAP, StepSpec, valid_key};
 use crate::yaml::YValue;
 
 const MAX_BODY_CHARS: usize = 16_384;
@@ -60,10 +57,14 @@ fn convert_step(
             key.as_str(),
             "id" | "agent"
                 | "model"
+                | "kind"
+                | "judge"
                 | "needs"
                 | "max-turns"
                 | "retry"
                 | "on-failure"
+                | "deny-read"
+                | "deny-write"
                 | "outputs"
                 | "body"
         ) {
@@ -149,87 +150,7 @@ fn step_rest(
             });
         }
     }
-    let max_turns = match field("max-turns") {
-        Some(value) => {
-            let text = value.as_str().ok_or_else(|| WorkflowError::BadMaxTurns {
-                file: file.to_string(),
-                step: id.to_string(),
-                detail: "must be a positive integer".to_string(),
-            })?;
-            let Some(number) = parse_u64(text) else {
-                return Err(WorkflowError::BadMaxTurns {
-                    file: file.to_string(),
-                    step: id.to_string(),
-                    detail: format!("`{text}` is not a positive integer"),
-                });
-            };
-            if number == 0 {
-                return Err(WorkflowError::BadMaxTurns {
-                    file: file.to_string(),
-                    step: id.to_string(),
-                    detail: "must be positive".to_string(),
-                });
-            }
-            if number > u64::from(MAX_STEP_TURNS_CEILING) {
-                return Err(WorkflowError::BadMaxTurns {
-                    file: file.to_string(),
-                    step: id.to_string(),
-                    detail: format!("`{number}` exceeds the {MAX_STEP_TURNS_CEILING} ceiling"),
-                });
-            }
-            number as u32
-        }
-        None => DEFAULT_STEP_MAX_TURNS,
-    };
-    let retry = match field("retry") {
-        Some(value) => {
-            let text = value.as_str().ok_or_else(|| WorkflowError::BadRetry {
-                file: file.to_string(),
-                step: id.to_string(),
-                value: "(non-string)".to_string(),
-                cap: MAX_RETRIES_CEILING,
-            })?;
-            let Some(number) = parse_u64(text) else {
-                return Err(WorkflowError::BadRetry {
-                    file: file.to_string(),
-                    step: id.to_string(),
-                    value: text.to_string(),
-                    cap: MAX_RETRIES_CEILING,
-                });
-            };
-            if number > u64::from(MAX_RETRIES_CEILING) {
-                return Err(WorkflowError::BadRetry {
-                    file: file.to_string(),
-                    step: id.to_string(),
-                    value: text.to_string(),
-                    cap: MAX_RETRIES_CEILING,
-                });
-            }
-            number as u32
-        }
-        None => 0,
-    };
-    let on_failure = match field("on-failure") {
-        Some(value) => {
-            let text = value.as_str().ok_or_else(|| WorkflowError::BadOnFailure {
-                file: file.to_string(),
-                step: id.to_string(),
-                value: "(non-string)".to_string(),
-            })?;
-            match text {
-                "stop" => OnFailure::Stop,
-                "skip" => OnFailure::Skip,
-                _ => {
-                    return Err(WorkflowError::BadOnFailure {
-                        file: file.to_string(),
-                        step: id.to_string(),
-                        value: text.to_string(),
-                    });
-                }
-            }
-        }
-        None => OnFailure::Stop,
-    };
+    let converted = gates::Converted::parse(file, id, fields)?;
     let outputs = string_list(file, id, "outputs", field("outputs"))?;
     let body = match field("body") {
         Some(value) => value.as_str().ok_or_else(|| WorkflowError::Parse {
@@ -249,21 +170,29 @@ fn step_rest(
             detail: format!("step `{id}`: `body` exceeds {MAX_BODY_CHARS} chars"),
         });
     }
+    check_gates(file, id, &converted, &needs)?;
     Ok(StepSpec {
         id: id.to_string(),
         agent: agent.to_string(),
         model,
+        kind: converted.kind,
+        judge: converted.judge,
         needs,
-        max_turns,
-        retry,
-        on_failure,
+        max_turns: converted.max_turns,
+        retry: converted.retry,
+        on_failure: converted.on_failure,
+        deny_read: converted.deny_read,
+        deny_write: converted.deny_write,
         outputs,
         body: body.to_string(),
         dependants: Vec::new(),
     })
 }
 
-pub fn convert_steps(file: &str, value: Option<&YValue>) -> Result<Vec<StepSpec>, WorkflowError> {
+pub(crate) fn convert_steps(
+    file: &str,
+    value: Option<&YValue>,
+) -> Result<Vec<StepSpec>, WorkflowError> {
     let Some(value) = value else {
         return Err(WorkflowError::MissingSteps {
             file: file.to_string(),

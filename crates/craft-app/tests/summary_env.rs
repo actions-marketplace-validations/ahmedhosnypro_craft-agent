@@ -98,7 +98,10 @@ async fn emit_workflow_summary_pulls_content_from_step_sessions() {
     summary::emit_workflow_summary(
         &env_with(&target),
         OutputFormat::StreamJson,
-        &report(),
+        summary::WorkflowRun {
+            report: &report(),
+            sessions_dir: &sessions,
+        },
         SummaryFacts {
             mission: "workflow",
             model: String::from("test-model"),
@@ -107,7 +110,6 @@ async fn emit_workflow_summary_pulls_content_from_step_sessions() {
             token_budget: Some(500_000),
             rows: Vec::new(),
         },
-        &sessions,
     );
     let written = std::fs::read_to_string(&target).expect("summary written");
     assert!(written.contains("## craft-agent — failed (exit 2)"));

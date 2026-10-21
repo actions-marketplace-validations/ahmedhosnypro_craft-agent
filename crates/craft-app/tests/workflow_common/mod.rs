@@ -195,6 +195,8 @@ pub fn step_agent_profile() -> AgentFile {
         prompt_mode: PromptMode::Full,
         tools: Some(vec!["read_file".to_string()]),
         disallowed_tools: Vec::new(),
+        deny_read: Vec::new(),
+        deny_write: Vec::new(),
         max_turns: None,
         timeout_secs: None,
         background: false,

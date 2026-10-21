@@ -145,6 +145,17 @@ fn unix_now() -> Result<u64, ProviderError> {
         .map_err(|err| tagged("system clock", err))
 }
 
+/// The documented identity claims of one assertion: the key id paired
+/// with the signing key when the credential carries one, the service
+/// account as issuer and subject, the token endpoint as audience, and
+/// the issue second.
+struct Assertion<'a> {
+    key_id: Option<&'a str>,
+    iss: &'a str,
+    aud: &'a str,
+    iat: u64,
+}
+
 /// The form params of the credential's OAuth grant: the freshly signed
 /// JWT assertion for a service account, the refresh-token grant for a
 /// user credential.
@@ -154,20 +165,21 @@ fn grant_params(
 ) -> Result<Vec<(String, String)>, ProviderError> {
     match credential {
         Credential::ServiceAccount(account) => {
-            let iat = unix_now()?;
-            let assertion = sign_jwt(
-                &account.signing_key,
-                account.private_key_id.as_deref(),
-                &account.client_email,
-                token_url,
-                iat,
-            )?;
+            let assertion = Assertion {
+                key_id: account.private_key_id.as_deref(),
+                iss: &account.client_email,
+                aud: token_url,
+                iat: unix_now()?,
+            };
             Ok(vec![
                 (
                     String::from("grant_type"),
                     String::from("urn:ietf:params:oauth:grant-type:jwt-bearer"),
                 ),
-                (String::from("assertion"), assertion),
+                (
+                    String::from("assertion"),
+                    sign_jwt(&account.signing_key, &assertion)?,
+                ),
             ])
         }
         Credential::AuthorizedUser {
@@ -187,22 +199,19 @@ fn grant_params(
 /// documented claim set, then the signature joins with a dot.
 fn sign_jwt(
     signing_key: &SigningKey<Sha256>,
-    key_id: Option<&str>,
-    iss: &str,
-    aud: &str,
-    iat: u64,
+    assertion: &Assertion<'_>,
 ) -> Result<String, ProviderError> {
     let mut header = serde_json::json!({"alg": "RS256", "typ": "JWT"});
-    if let Some(key_id) = key_id {
+    if let Some(key_id) = assertion.key_id {
         header["kid"] = serde_json::Value::from(key_id);
     }
     let claims = serde_json::json!({
-        "iss": iss,
-        "sub": iss,
+        "iss": assertion.iss,
+        "sub": assertion.iss,
         "scope": CLOUD_PLATFORM_SCOPE,
-        "aud": aud,
-        "iat": iat,
-        "exp": iat.saturating_add(JWT_LIFETIME_SECS),
+        "aud": assertion.aud,
+        "iat": assertion.iat,
+        "exp": assertion.iat.saturating_add(JWT_LIFETIME_SECS),
     });
     let encode = |value: &serde_json::Value| -> Result<String, ProviderError> {
         serde_json::to_vec(value)

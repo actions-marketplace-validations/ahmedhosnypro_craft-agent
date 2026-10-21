@@ -45,6 +45,9 @@ impl BashTool {
         if let Some(hosts) = egress::allowlist(ctx.env_value(egress::KNOB).as_deref()) {
             egress::check(&command, &hosts)?;
         }
+        if let Some(glob) = ctx.command_denied(&command) {
+            return Err(crate::scope::denial("bash", &command, &glob, "read"));
+        }
         let max_secs = self.limits.bash_max_timeout.as_secs();
         let timeout_secs = args.arg_opt_u64("timeout_secs", max_secs)?;
         let timeout = match timeout_secs {

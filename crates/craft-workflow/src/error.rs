@@ -50,11 +50,20 @@ pub enum WorkflowError {
         value: String,
         cap: u32,
     },
-    #[error("workflow file `{file}`: step `{step}` on-failure `{value}` is not stop|skip")]
+    #[error("workflow file `{file}`: step `{step}` on-failure `{value}` is not stop|skip|warn")]
     BadOnFailure {
         file: String,
         step: String,
         value: String,
+    },
+    #[error(
+        "workflow file `{file}`: step `{step}` on-failure `{value}` cannot have dependants (`{dependent}` needs it)"
+    )]
+    LooseFailureHasDependants {
+        file: String,
+        step: String,
+        value: String,
+        dependent: String,
     },
     #[error("workflow file `{file}`: step `{step}` max-turns {detail}")]
     BadMaxTurns {
@@ -70,14 +79,6 @@ pub enum WorkflowError {
     MissingStepId { file: String, index: usize },
     #[error("workflow file `{file}`: step `{step}` has no body")]
     MissingBody { file: String, step: String },
-    #[error(
-        "workflow file `{file}`: step `{step}` declares `on-failure: skip` but `{dependent}` depends on it"
-    )]
-    SkipHasDependants {
-        file: String,
-        step: String,
-        dependent: String,
-    },
     #[error("workflow file `{file}`: unknown field `{field}` in {context}")]
     UnknownField {
         file: String,
@@ -136,6 +137,22 @@ pub enum WorkflowError {
     Divergence { detail: String },
     #[error("step `{step}` could not run: {detail}")]
     StepLaunch { step: String, detail: String },
+    #[error("judge step `{step}`: {detail}")]
+    JudgeGate { step: String, detail: String },
+    #[error("workflow file `{file}`: step `{step}` `{field}` `{value}` is not a count (0..={cap})")]
+    BadJudge {
+        file: String,
+        step: String,
+        field: String,
+        value: String,
+        cap: u32,
+    },
+    #[error("workflow file `{file}`: step `{step}`: {detail}")]
+    BadScope {
+        file: String,
+        step: String,
+        detail: String,
+    },
     #[error("scheduler exceeded its iteration cap ({cap})")]
     SchedulerCap { cap: usize },
     #[error("internal scheduler invariant broken: {detail}")]

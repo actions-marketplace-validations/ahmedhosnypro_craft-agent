@@ -7,7 +7,88 @@ use std::path::Path;
 
 use craft_app::summary::{self, SummaryFacts};
 use craft_app::{CancelCategory, ExitStatus};
-use summary_common::{assistant_call, assistant_text, facts, outcome, report, run_session, user};
+use summary_common::{
+    ScriptedCall, assistant_call, assistant_text, facts, outcome, report, run_session, user,
+};
+
+fn rendered_for(category: CancelCategory, exit: ExitStatus, detail: &str) -> summary::Rendered {
+    let outcome = outcome(category, exit, detail);
+    let session = run_session();
+    summary::render_run(&outcome, facts(), Some(&session))
+}
+
+fn assert_heading(rended: &summary::Rendered, word: &str, code: u8) {
+    assert!(
+        rended
+            .markdown
+            .contains(&format!("## craft-agent — {word} (exit {code})")),
+        "{word} heading: {}",
+        rended.markdown
+    );
+}
+
+fn assert_deliverables(rended: &summary::Rendered, word: &str) {
+    assert!(
+        rended
+            .markdown
+            .contains("- [PR #7 (octo/app)](https://github.com/octo/app/pull/7)"),
+        "{word} deliverable"
+    );
+    assert!(
+        rended.markdown.contains("- pushed `octo/app@main`"),
+        "{word} push"
+    );
+}
+
+fn assert_lead(rended: &summary::Rendered, word: &str, detail: &str) {
+    let expected = format!("> {detail}\n");
+    assert!(
+        rended.markdown.contains(&expected),
+        "{word} lead: {}",
+        rended.markdown
+    );
+}
+
+fn assert_fact_rows(rended: &summary::Rendered, word: &str) {
+    assert!(rended.markdown.contains("| Mission | run |"), "{word}");
+    assert!(
+        rended.markdown.contains("| Model | test-model (openai) |"),
+        "{word}"
+    );
+    assert!(rended.markdown.contains("| Turns | 2 of 40 |"), "{word}");
+    assert!(
+        rended
+            .markdown
+            .contains("| Tokens | in 100 · out 50 · cache-read 10 · reasoning 5 (of 4000000) |"),
+        "{word}"
+    );
+    assert!(
+        rended
+            .markdown
+            .contains("| Session | /tmp/sessions/record.jsonl |"),
+        "{word}"
+    );
+}
+
+fn assert_transcript_sections(rended: &summary::Rendered, word: &str) {
+    assert!(rended.markdown.contains("### Final message"), "{word}");
+    assert!(
+        rended
+            .markdown
+            .contains("<details><summary>Transcript tail</summary>"),
+        "{word} tail"
+    );
+}
+
+fn assert_run_notice(rended: &summary::Rendered, word: &str, code: u8) {
+    assert_eq!(
+        rended.notice,
+        format!(
+            "::notice::{word} — exit {code} — done — see https://github.com/octo/app/pull/7 for the PR"
+        ),
+        "{word} notice"
+    );
+}
 
 #[test]
 fn run_summary_renders_heading_facts_and_sections_per_conclusion() {
@@ -24,65 +105,13 @@ fn run_summary_renders_heading_facts_and_sections_per_conclusion() {
     ];
     for (category, exit, word, code) in cases {
         let detail = format!("{word} detail line");
-        let outcome = outcome(category, exit, &detail);
-        let session = run_session();
-        let rendered = summary::render_run(&outcome, facts(), Some(&session));
-        assert!(
-            rendered
-                .markdown
-                .contains(&format!("## craft-agent — {word} (exit {code})")),
-            "{word} heading: {}",
-            rendered.markdown
-        );
-        assert!(
-            rendered.markdown.contains(&format!("> {detail}\n")),
-            "{word} lead: {}",
-            rendered.markdown
-        );
-        assert!(rendered.markdown.contains("| Mission | run |"), "{word}");
-        assert!(
-            rendered
-                .markdown
-                .contains("| Model | test-model (openai) |"),
-            "{word}"
-        );
-        assert!(rendered.markdown.contains("| Turns | 2 of 40 |"), "{word}");
-        assert!(
-            rendered.markdown.contains(
-                "| Tokens | in 100 · out 50 · cache-read 10 · reasoning 5 (of 4000000) |"
-            ),
-            "{word}"
-        );
-        assert!(
-            rendered
-                .markdown
-                .contains("| Session | /tmp/sessions/record.jsonl |"),
-            "{word}"
-        );
-        assert!(
-            rendered
-                .markdown
-                .contains("- [PR #7 (octo/app)](https://github.com/octo/app/pull/7)"),
-            "{word} deliverable"
-        );
-        assert!(
-            rendered.markdown.contains("- pushed `octo/app@main`"),
-            "{word} push"
-        );
-        assert!(rendered.markdown.contains("### Final message"), "{word}");
-        assert!(
-            rendered
-                .markdown
-                .contains("<details><summary>Transcript tail</summary>"),
-            "{word} tail"
-        );
-        assert_eq!(
-            rendered.notice,
-            format!(
-                "::notice::{word} — exit {code} — done — see https://github.com/octo/app/pull/7 for the PR"
-            ),
-            "{word} notice"
-        );
+        let rendered = rendered_for(category, exit, &detail);
+        assert_heading(&rendered, word, code);
+        assert_lead(&rendered, word, &detail);
+        assert_fact_rows(&rendered, word);
+        assert_deliverables(&rendered, word);
+        assert_transcript_sections(&rendered, word);
+        assert_run_notice(&rendered, word, code);
     }
 }
 
@@ -93,7 +122,7 @@ fn a_run_without_a_final_message_falls_back_to_the_detail_line() {
         ExitStatus::MaxTurns,
         "run aborted after max turns (1)",
     );
-    let session = vec![user("task"), assistant_call("bash")];
+    let session = vec![user("task"), assistant_call(ScriptedCall::named("bash"))];
     let rendered = summary::render_run(&outcome, facts(), Some(&session));
     assert_eq!(
         rendered.notice,

@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use super::globs::check_globs;
 use super::parse::{Parsed, entry};
 use super::tools::check_tools;
 use super::{AgentFile, AgentFileError, PromptMode, file_stem};
@@ -24,6 +25,8 @@ pub(crate) fn build(parsed: &Parsed, path: &Path) -> Result<AgentFile, AgentFile
     let model = check_model(path, parsed)?;
     let tools = check_tools(path, parsed, "tools")?;
     let disallowed_tools = check_tools(path, parsed, "disallowedTools")?.unwrap_or_default();
+    let deny_read = check_globs(path, parsed, "denyRead")?;
+    let deny_write = check_globs(path, parsed, "denyWrite")?;
     let prompt_mode = prompt_mode(parsed, path)?;
     let max_turns = number_field(parsed, "maxTurns", path)?;
     let timeout_secs = number_field(parsed, "timeoutSecs", path)?;
@@ -38,6 +41,8 @@ pub(crate) fn build(parsed: &Parsed, path: &Path) -> Result<AgentFile, AgentFile
         prompt_mode,
         tools,
         disallowed_tools,
+        deny_read,
+        deny_write,
         max_turns,
         timeout_secs,
         background,

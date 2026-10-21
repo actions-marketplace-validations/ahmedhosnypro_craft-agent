@@ -17,6 +17,14 @@ use crate::summary;
 /// Curated repo list shipped with the workspace config.
 pub const CURATED_REPOS_RELATIVE_PATH: &str = "config/digest-repos.txt";
 
+/// The resolved launch environment: the process map, the config it
+/// produced, and the redactor both share.
+struct DigestEnv<'a> {
+    env: &'a crate::config::EnvMap,
+    config: &'a EnvConfig,
+    redactor: &'a std::sync::Arc<craft_redact::Redactor>,
+}
+
 /// Resolves the repo set: explicit `--repos` wins over the curated list.
 pub fn resolve_repos(
     explicit: Option<Vec<String>>,
@@ -65,7 +73,12 @@ pub fn execute_digest(digest: DigestCli) -> Result<i32, AppError> {
     let redactor = std::sync::Arc::new(craft_redact::Redactor::from_env());
     redaction::emit_add_mask(&redactor, &env);
     let config = resolve_env_config(&env)?;
-    dispatch_digest(&digest, org, &repos, &config, &env, &redactor)
+    let resolved = DigestEnv {
+        env: &env,
+        config: &config,
+        redactor: &redactor,
+    };
+    dispatch_digest(&digest, org, &repos, &resolved)
 }
 
 /// The single seam to the craft-digest pipeline: mount the resolved
@@ -75,26 +88,10 @@ fn dispatch_digest(
     digest: &DigestCli,
     org: &str,
     repos: &[String],
-    config: &EnvConfig,
-    env: &crate::config::EnvMap,
-    redactor: &std::sync::Arc<craft_redact::Redactor>,
+    resolved: &DigestEnv<'_>,
 ) -> Result<i32, AppError> {
-    let backend = mount_backend(config)?;
-    let workspace_root =
-        std::env::current_dir().map_err(|source| AppError::WorkspaceRoot { source })?;
-    let max_turns = digest.max_turns.unwrap_or(40);
-    let max_tokens = digest.max_tokens.unwrap_or(4_000_000);
-    let options = DigestOptions {
-        org: org.to_string(),
-        repos: repos.to_vec(),
-        lookback: digest.since,
-        dry_run: digest.dry_run,
-        workspace_root,
-        prompt_path: None,
-        max_turns,
-        max_total_tokens: max_tokens,
-        idle_timeout: digest.idle_timeout_secs.map(Duration::from_secs),
-    };
+    let backend = mount_backend(resolved.config)?;
+    let (options, caps) = digest_options(digest, org, repos)?;
     let deps = DigestDeps {
         gh: GhRunner::new(),
         clone_runner: CloneRunner::new(),
@@ -107,21 +104,61 @@ fn dispatch_digest(
     let outcome = runtime
         .block_on(run_digest(backend, &deps, &options, &mut std::io::stdout()))
         .map_err(|source| AppError::Digest { source })?;
+    report_digest(&outcome, &caps, resolved);
+    Ok(0)
+}
+
+/// The two caps the summary table reports next to the run counts.
+struct DigestCaps {
+    max_turns: u32,
+    max_tokens: u64,
+}
+
+fn digest_options(
+    digest: &DigestCli,
+    org: &str,
+    repos: &[String],
+) -> Result<(DigestOptions, DigestCaps), AppError> {
+    let workspace_root =
+        std::env::current_dir().map_err(|source| AppError::WorkspaceRoot { source })?;
+    let caps = DigestCaps {
+        max_turns: digest.max_turns.unwrap_or(40),
+        max_tokens: digest.max_tokens.unwrap_or(4_000_000),
+    };
+    let options = DigestOptions {
+        org: org.to_string(),
+        repos: repos.to_vec(),
+        lookback: digest.since,
+        dry_run: digest.dry_run,
+        workspace_root,
+        prompt_path: None,
+        max_turns: caps.max_turns,
+        max_total_tokens: caps.max_tokens,
+        idle_timeout: digest.idle_timeout_secs.map(Duration::from_secs),
+    };
+    Ok((options, caps))
+}
+
+/// Print the digest path and append the mission summary.
+fn report_digest(
+    outcome: &craft_digest::pipeline::DigestOutcome,
+    caps: &DigestCaps,
+    resolved: &DigestEnv<'_>,
+) {
     if let Some(path) = &outcome.digest_path {
         println!("digest: {}", path.display());
     }
     summary::emit_digest_summary(
-        env,
+        resolved.env,
         outcome.digest_path.as_deref(),
         outcome.turns,
         summary::SummaryFacts {
             mission: "digest",
-            model: config.model.clone(),
-            provider: summary::provider_name(config.provider).to_string(),
-            turn_cap: Some(max_turns),
-            token_budget: Some(max_tokens),
-            rows: redaction::summary_rows(redactor),
+            model: resolved.config.model.clone(),
+            provider: summary::provider_name(resolved.config.provider).to_string(),
+            turn_cap: Some(caps.max_turns),
+            token_budget: Some(caps.max_tokens),
+            rows: redaction::summary_rows(resolved.redactor),
         },
     );
-    Ok(0)
 }

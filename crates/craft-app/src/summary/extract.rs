@@ -58,10 +58,9 @@ pub fn transcript_tail(messages: &[ChatMessage], cap: usize) -> Option<String> {
         let line = render_message(message, remaining);
         let count = line.chars().count();
         if count + 1 > remaining {
-            let trimmed = cap_chars(&line, remaining - 1).to_string();
-            if trimmed.is_empty() {
+            let Some(trimmed) = cut_line(&line, remaining) else {
                 break;
-            }
+            };
             lines.push(trimmed);
             break;
         }
@@ -74,6 +73,12 @@ pub fn transcript_tail(messages: &[ChatMessage], cap: usize) -> Option<String> {
     lines.reverse();
     let joined = lines.join("\n");
     Some(cap_chars(&joined, cap).to_string())
+}
+
+/// A line cut to the room it has left; `None` when nothing fits.
+fn cut_line(line: &str, remaining: usize) -> Option<String> {
+    let trimmed = cap_chars(line, remaining - 1).to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 /// Prefix of at most `cap` characters, cut on a character boundary.
@@ -130,11 +135,11 @@ fn scan_pr_urls(text: &str, found: &mut Vec<String>) {
 /// bullet, plus the bytes it consumed.
 fn parse_pr_url(text: &str) -> Option<(String, usize)> {
     let rest = text.strip_prefix(URL_PREFIX)?;
-    let (owner, rest) = slug(rest)?;
+    let (owner, rest) = bounded_run(rest, SLUG_RULE)?;
     let rest = rest.strip_prefix('/')?;
-    let (repo, rest) = slug(rest)?;
+    let (repo, rest) = bounded_run(rest, SLUG_RULE)?;
     let rest = rest.strip_prefix("/pull/")?;
-    let (number, rest) = number(rest)?;
+    let (number, rest) = bounded_run(rest, NUMBER_RULE)?;
     if rest.starts_with(|c: char| c.is_ascii_alphanumeric()) {
         return None;
     }
@@ -149,19 +154,24 @@ fn scan_push_targets(text: &str, found: &mut Vec<String>) {
         if found.len() >= DELIVERABLES_CAP {
             return;
         }
-        if let Some(slug) = push_remote(line) {
-            remote = Some(slug);
-            continue;
+        match push_remote(line) {
+            Some(slug) => remote = Some(slug),
+            None => record_push(remote.as_ref(), line, found),
         }
-        let Some((owner, repo)) = &remote else {
-            continue;
-        };
-        if let Some(branch) = push_ref(line) {
-            let bullet = format!("- pushed `{owner}/{repo}@{branch}`");
-            if !found.contains(&bullet) {
-                found.push(bullet);
-            }
-        }
+    }
+}
+
+/// The push bullet one line names, against the remote it followed.
+fn record_push(remote: Option<&(String, String)>, line: &str, found: &mut Vec<String>) {
+    let Some((owner, repo)) = remote else {
+        return;
+    };
+    let Some(branch) = push_ref(line) else {
+        return;
+    };
+    let bullet = format!("- pushed `{owner}/{repo}@{branch}`");
+    if !found.contains(&bullet) {
+        found.push(bullet);
     }
 }
 
@@ -171,9 +181,9 @@ fn push_remote(line: &str) -> Option<(String, String)> {
     let at = rest.find("github.com")?;
     let rest = rest.get(at + "github.com".len()..)?;
     let rest = rest.strip_prefix(':').or_else(|| rest.strip_prefix('/'))?;
-    let (owner, rest) = slug(rest)?;
+    let (owner, rest) = bounded_run(rest, SLUG_RULE)?;
     let rest = rest.strip_prefix('/')?;
-    let (repo, _) = slug(rest)?;
+    let (repo, _) = bounded_run(rest, SLUG_RULE)?;
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
     Some((owner.to_string(), repo.to_string()))
 }
@@ -189,9 +199,9 @@ fn push_ref(line: &str) -> Option<&str> {
         }
         inner.get(close + 1..)?
     } else {
-        let (_, rest) = object_id(rest)?;
+        let (_, rest) = bounded_run(rest, OBJECT_ID_RULE)?;
         let rest = rest.strip_prefix("..")?;
-        let (_, tail) = object_id(rest)?;
+        let (_, tail) = bounded_run(rest, OBJECT_ID_RULE)?;
         tail
     };
     let mut fields = tail.split_whitespace();
@@ -214,40 +224,72 @@ fn is_slug_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
 }
 
-/// One bounded GitHub slug component: the slug and the remainder.
-fn slug(text: &str) -> Option<(&str, &str)> {
-    let bytes = text.as_bytes();
-    let mut n = 0;
-    while n < bytes.len() && n < SLUG_CAP && is_slug_byte(bytes[n]) {
-        n += 1;
-    }
-    if n == 0 {
-        return None;
-    }
-    Some((text.get(..n)?, text.get(n..)?))
+fn is_digit_byte(byte: u8) -> bool {
+    byte.is_ascii_digit()
 }
 
-/// One bounded pull-request number: the digits and the remainder.
-fn number(text: &str) -> Option<(&str, &str)> {
-    let bytes = text.as_bytes();
-    let mut n = 0;
-    while n < bytes.len() && n < NUMBER_CAP && bytes[n].is_ascii_digit() {
-        n += 1;
-    }
-    if n == 0 || (n == NUMBER_CAP && bytes.get(n).is_some_and(|byte| byte.is_ascii_digit())) {
-        return None;
-    }
-    Some((text.get(..n)?, text.get(n..)?))
+fn is_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
 }
 
-/// One bounded hexadecimal object id: the id and the remainder.
-fn object_id(text: &str) -> Option<(&str, &str)> {
+/// Whether a run that fills its cap may keep going past it.
+#[derive(Clone, Copy)]
+enum CapRule {
+    /// The cap is only a display bound.
+    Truncate,
+    /// The cap is a hard end: a run continuing past it is rejected.
+    Reject,
+}
+
+/// One bounded run's floor, cap, cap rule, and byte test.
+#[derive(Clone, Copy)]
+struct RunBounds {
+    min: usize,
+    cap: usize,
+    capped: CapRule,
+    accepts: fn(u8) -> bool,
+}
+
+const SLUG_RULE: RunBounds = RunBounds {
+    min: 1,
+    cap: SLUG_CAP,
+    capped: CapRule::Truncate,
+    accepts: is_slug_byte,
+};
+const NUMBER_RULE: RunBounds = RunBounds {
+    min: 1,
+    cap: NUMBER_CAP,
+    capped: CapRule::Reject,
+    accepts: is_digit_byte,
+};
+const OBJECT_ID_RULE: RunBounds = RunBounds {
+    min: 7,
+    cap: OBJECT_ID_CAP,
+    capped: CapRule::Reject,
+    accepts: is_hex_byte,
+};
+/// Hexadecimal object id cap; real ids are 40 hex digits.
+const OBJECT_ID_CAP: usize = 40;
+
+/// One bounded run of accepted bytes: the run and the remainder it left.
+/// `None` when it is too short, or when a `Reject`-ruled run fills its
+/// cap and keeps going.
+fn bounded_run(text: &str, bounds: RunBounds) -> Option<(&str, &str)> {
     let bytes = text.as_bytes();
     let mut n = 0;
-    while n < bytes.len() && n < 40 && bytes[n].is_ascii_hexdigit() {
+    while let Some(&byte) = bytes.get(n) {
+        if n >= bounds.cap || !(bounds.accepts)(byte) {
+            break;
+        }
         n += 1;
     }
-    if n < 7 || (n == 40 && bytes.get(n).is_some_and(|byte| byte.is_ascii_hexdigit())) {
+    if n < bounds.min {
+        return None;
+    }
+    let overruns = matches!(bounds.capped, CapRule::Reject)
+        && n == bounds.cap
+        && bytes.get(n).is_some_and(|byte| (bounds.accepts)(*byte));
+    if overruns {
         return None;
     }
     Some((text.get(..n)?, text.get(n..)?))

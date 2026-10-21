@@ -58,6 +58,11 @@ integration_dialect_mount:
 integration_anthropic:
     cargo test -p craft-providers --test integration_anthropic -- --ignored --nocapture
 
+# Judge seat-repair loop over the BYOK endpoint: forced malformed verdicts,
+# then the real model's verdict settles the gate.
+integration_workflow_judge:
+    cargo test -p craft-app --test integration_workflow_judge -- --ignored --nocapture
+
 # Gemini generateContent live corpus: streamed turn, forced tool call,
 # bad-key auth.
 integration_gemini:

@@ -33,7 +33,10 @@ const DRAIN_WINDOW: Duration = Duration::from_secs(10);
 /// Retry cadence for queueing the finish marker behind a full queue.
 const MARKER_RETRY: Duration = Duration::from_millis(50);
 
-/// The write side the agent loop holds; emit never blocks.
+/// The write side the agent loop holds; emit never blocks. Cheap to
+/// clone: every clone is another handle on the same event queue, so
+/// a workflow executor clone emits beside the run's own sink.
+#[derive(Clone)]
 pub struct EventSink {
     tx: SyncSender<Option<RuntimeEvent>>,
     closed: ClosedSignal,

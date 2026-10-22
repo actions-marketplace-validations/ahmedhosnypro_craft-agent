@@ -11,12 +11,14 @@ use std::time::Duration;
 use craft_core::agents::AgentFile;
 use craft_core::provider::Provider;
 use craft_runtime::{
-    ChildKnobs, ChildRun, DEFAULT_REQUEST_TOKENS, ExitStatus, Runner, RuntimeEvent, prepare_child,
+    ChildKnobs, ChildRun, DEFAULT_REQUEST_TOKENS, ExitStatus, Runner, RuntimeEvent, SubagentWiring,
+    prepare_child,
 };
 use craft_tools::ToolLimits;
 use craft_workflow::status::{StepConclusion, StepUsage};
 use craft_workflow::{StepExecutor, StepInputs, StepOutcome, WorkflowError};
 
+use crate::event_writer::EventSink;
 use crate::prompt::DEFAULT_SYSTEM_PROMPT;
 
 /// Mounts the provider one step runs against, for its model id.
@@ -39,6 +41,14 @@ pub struct WorkflowExecutor<P: Provider + Send + Sync> {
     default_model: String,
     knobs: StepKnobs,
     agents: BTreeMap<String, AgentFile>,
+    /// The run's shared subagent wiring: every step's registry holds
+    /// the spawn pair through it, while each profile's `tools`
+    /// allowlist decides whether that profile may actually use it.
+    subagents: Option<SubagentWiring>,
+    /// The run's event sink: a step's subagent launches and settles
+    /// land on it, so a fan-out is visible in the live stream and the
+    /// renderer rather than only inside the step's own transcript.
+    sink: Option<EventSink>,
 }
 
 impl<P: Provider + Send + Sync> WorkflowExecutor<P> {
@@ -64,7 +74,23 @@ impl<P: Provider + Send + Sync> WorkflowExecutor<P> {
                 step_attempts,
             },
             agents,
+            subagents: None,
+            sink: None,
         }
+    }
+
+    /// Mounts the run's subagent hub over the executor: a step fan-out
+    /// needs this. Without it a step keeps today's spawn-less registry.
+    pub fn with_subagents(mut self, wiring: Option<SubagentWiring>) -> Self {
+        self.subagents = wiring;
+        self
+    }
+
+    /// Points the executor at the run's event sink: a step's subagent
+    /// launches and settles stream live, exactly like a mission run's.
+    pub fn with_sink(mut self, sink: Option<EventSink>) -> Self {
+        self.sink = sink;
+        self
     }
 }
 
@@ -76,6 +102,8 @@ impl<P: Provider + Send + Sync> StepExecutor for WorkflowExecutor<P> {
         let mount = self.mount.clone();
         let default_model = self.default_model.clone();
         let knobs = self.knobs.clone();
+        let subagents = self.subagents.clone();
+        let sink = self.sink.clone();
         let agent = self.agents.get(&step.id).cloned();
         async move {
             let launch = |detail: String| WorkflowError::StepLaunch {
@@ -89,19 +117,22 @@ impl<P: Provider + Send + Sync> StepExecutor for WorkflowExecutor<P> {
             };
             let model = step.model.clone().unwrap_or(default_model);
             let provider = mount(&model).map_err(launch)?;
-            let child = prepare_step_child(&agent, &step, &knobs).map_err(launch)?;
-            let stream = drive_step(provider, child, &step).await;
+            let child = prepare_step_child(&agent, &step, &knobs, &subagents).map_err(launch)?;
+            let stream = drive_step(provider, child, &step, sink.as_ref()).await;
             Ok(finish_step(stream))
         }
     }
 }
 
 /// The step's child run: profile, session, knobs, and the run's own
-/// deny lists merged over the profile's.
+/// deny lists merged over the profile's. `subagents` carries the run's
+/// shared wiring — the step's registry holds the spawn pair through
+/// it, gated by the profile's allowlist at registry-build time.
 fn prepare_step_child(
     agent: &AgentFile,
     step: &StepInputs,
     knobs: &StepKnobs,
+    subagents: &Option<SubagentWiring>,
 ) -> Result<ChildRun, String> {
     let mut deny_read = agent.deny_read.clone();
     deny_read.extend(step.deny_read.iter().cloned());
@@ -122,7 +153,7 @@ fn prepare_step_child(
             session_path: Some(session_path),
             idle_timeout: knobs.idle_timeout,
             step_attempts: knobs.step_attempts,
-            spawn: None,
+            spawn: subagents.clone(),
             deny_read,
             deny_write,
         },
@@ -139,11 +170,15 @@ struct StepStream {
     final_text: String,
 }
 
-/// Runs the step to its conclusion, folding the streamed deltas.
+/// Runs the step to its conclusion, folding the streamed deltas. A
+/// step's subagent launches and settles also ride the run's event
+/// sink, so a fan-out is visible in the live stream and the renderer
+/// while it runs, exactly like a mission run's.
 async fn drive_step<P: Provider + Send + Sync>(
     provider: Arc<P>,
     child: ChildRun,
     step: &StepInputs,
+    sink: Option<&EventSink>,
 ) -> StepStream {
     let runner = Runner::new(provider, child.registry, child.config);
     let mut final_text = String::new();
@@ -153,6 +188,11 @@ async fn drive_step<P: Provider + Send + Sync>(
                 final_text.clear();
             }
             RuntimeEvent::AssistantDelta { text, .. } => final_text.push_str(&text),
+            RuntimeEvent::SubagentStarted { .. } | RuntimeEvent::SubagentFinished { .. } => {
+                if let Some(sink) = sink {
+                    sink.emit(event.clone());
+                }
+            }
             _ => {}
         })
         .await;

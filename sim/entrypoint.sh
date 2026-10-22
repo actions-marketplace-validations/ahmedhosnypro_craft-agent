@@ -96,12 +96,16 @@ git config --global user.email "agent@craft-agent.invalid"
 # binary's own typed validation reports, not a pre-flight harness error.
 mission="${CRAFT_AGENT_MISSION:-run}"
 case "$mission" in
-  run | digest) ;;
-  *) fail "unknown mission '${mission}' — expected run or digest" ;;
+  run | digest | workflow) ;;
+  *) fail "unknown mission '${mission}' — expected run, digest, or workflow" ;;
 esac
 
 prompt_file="${RUNNER_TEMP}/prompt.txt"
-if [ -n "${CRAFT_AGENT_PROMPT:-}" ]; then
+if [ "$mission" = "workflow" ]; then
+  # The workflow plan is located from the workspace, like the action's
+  # CRAFT_AGENT_WORKFLOW switch in scripts/run-scan.sh; no prompt file.
+  :
+elif [ -n "${CRAFT_AGENT_PROMPT:-}" ]; then
   printf '%s' "$CRAFT_AGENT_PROMPT" > "$prompt_file"
   host_own "$prompt_file"
 elif [ -n "${CRAFT_AGENT_PROMPT_FILE:-}" ]; then
@@ -114,15 +118,25 @@ else
 fi
 
 # The command is assembled exactly like the action's: run carries
-# stream-json and the prompt file; digest takes neither.
-cmd=(craft-agent "$mission" --max-turns "${CRAFT_AGENT_MAX_TURNS:-40}"
-  --max-tokens "${CRAFT_AGENT_MAX_TOKENS:-4000000}")
-if [ "$mission" = "run" ]; then
-  cmd+=(--output-format stream-json)
-  cmd+=(--prompt "$prompt_file")
+# stream-json and the prompt file; digest takes neither; workflow
+# names the plan and streams framing events — its per-step detail
+# lives in the run journal, mirrored to /out below.
+if [ "$mission" = "workflow" ]; then
+  [ -n "${CRAFT_AGENT_WORKFLOW:-}" ] ||
+    fail "mission=workflow needs CRAFT_AGENT_WORKFLOW (the plan name)"
+  cmd=(craft-agent workflow
+    --workflow "$CRAFT_AGENT_WORKFLOW"
+    --output-format stream-json)
+else
+  cmd=(craft-agent "$mission" --max-turns "${CRAFT_AGENT_MAX_TURNS:-40}"
+    --max-tokens "${CRAFT_AGENT_MAX_TOKENS:-4000000}")
+  if [ "$mission" = "run" ]; then
+    cmd+=(--output-format stream-json)
+    cmd+=(--prompt "$prompt_file")
+  fi
 fi
 if [ -n "${CRAFT_AGENT_ARGS:-}" ]; then
-  read -ra extra_args <<< "$CRAFT_AGENT_ARGS"
+  read -ra extra_args <<< "${CRAFT_AGENT_ARGS}"
   cmd+=("${extra_args[@]}")
 fi
 
@@ -141,19 +155,61 @@ if [ -f "${OUT_DIR}/summary.md" ]; then
   host_own "${OUT_DIR}/summary.md"
 fi
 
-case "$rc" in
-  0) conclusion="success" ;;
-  2) conclusion="max-turns" ;;
-  3) conclusion="budget" ;;
-  4) conclusion="denied" ;;
-  *) conclusion="error" ;;
-esac
+# The workflow's exit taxonomy: 0 success, 1 a failed step or gate,
+# 2 max-turns, 3 budget — the mission taxonomy keeps 1 as an error.
+if [ "$mission" = "workflow" ]; then
+  case "$rc" in
+    0) conclusion="success" ;;
+    1) conclusion="failed" ;;
+    2) conclusion="max-turns" ;;
+    3) conclusion="budget" ;;
+    *) conclusion="error" ;;
+  esac
+else
+  case "$rc" in
+    0) conclusion="success" ;;
+    2) conclusion="max-turns" ;;
+    3) conclusion="budget" ;;
+    4) conclusion="denied" ;;
+    *) conclusion="error" ;;
+  esac
+fi
 
 final_message=""
 if [ -s "$stream" ]; then
-  final_message="$(tail -n 1 "$stream" |
-    jq -r 'select(.type == "run_finished") | .detail // ""' 2>/dev/null || true)"
+  if [ "$mission" = "workflow" ]; then
+    # The terminal line is workflow_finished carrying the whole report;
+    # the failed step and the skipped count are the run's one line.
+    final_message="$(jq -r '
+      select(.type == "workflow_finished") | .report |
+      "failed_step \(.failed_step // "-") skipped \(.steps | map(select(.status.kind == "skipped")) | length)"
+    ' "$stream" 2>/dev/null | tail -n 1 || true)"
+  else
+    final_message="$(tail -n 1 "$stream" |
+      jq -r 'select(.type == "run_finished") | .detail // ""' 2>/dev/null || true)"
+  fi
   : "${final_message:=}"
+fi
+
+# The workflow's journal and sessions are the per-step evidence: copy
+# them out of the workspace so the run dir keeps them beside the
+# stream, and host-side assertions read them without entering the
+# clone.
+workflow_lines=""
+if [ "$mission" = "workflow" ]; then
+  journal="${OUT_DIR}/journal.jsonl"
+  sessions="${OUT_DIR}/sessions"
+  mkdir -p "$sessions"
+  find "${GITHUB_WORKSPACE}/.craft-agent/workflows" -name journal.jsonl \
+    -exec cp {} "$journal" \; 2>/dev/null || true
+  find "${GITHUB_WORKSPACE}/.craft-agent/workflows" -path '*/sessions/*' \
+    -name '*.jsonl' -exec cp {} "$sessions/" \; 2>/dev/null || true
+  host_own "$sessions"
+  [ -s "$journal" ] && host_own "$journal"
+  [ -s "$journal" ] && workflow_lines="journal=out/journal.jsonl"
+  [ -n "$(ls -A "$sessions" 2>/dev/null)" ] &&
+    workflow_lines="${workflow_lines}
+sessions=out/sessions/"
 fi
 
 digest_path=""
@@ -182,6 +238,9 @@ fi
   echo "stream=out/stream.jsonl"
   if [ -n "$summary_line" ]; then
     echo "$summary_line"
+  fi
+  if [ -n "$workflow_lines" ]; then
+    printf '%s\n' "$workflow_lines"
   fi
   echo "final-message<<CRAFT_AGENT_EOF"
   printf '%s\n' "$final_message" | sed '/^CRAFT_AGENT_EOF$/d'

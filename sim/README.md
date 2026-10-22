@@ -25,6 +25,26 @@ One run:
 The image also takes direct binary invocations, e.g.
 `docker run --rm craft-agent-sim:sim --version`.
 
+### The workflow rehearsal
+
+A judged workflow rehearses locally before it ships, the same way:
+
+    CRAFT_AGENT_MISSION=workflow CRAFT_AGENT_WORKFLOW=adopt-libs \
+      CRAFT_AGENT_REPO_URL=https://github.com/ahmedhosnypro/craft-libs-adoption.git \
+      CRAFT_AGENT_REPO_SLUG=ahmedhosnypro/craft-libs-adoption \
+      CRAFT_AGENT_SUBAGENT_MAX_DEPTH=4 \
+      CRAFT_AGENT_SUBAGENT_MAX_TOTAL=1024 \
+      CRAFT_AGENT_SUBAGENT_MAX_CONCURRENCY=1024 \
+      CRAFT_AGENT_WRITE_REPO=ahmedhosnypro/craft-libs \
+      bash sim/run-sim.sh
+
+The container runs `craft-agent workflow --workflow <name>` against the
+fresh clone with the same knobs the action passes, then mirrors the run
+journal and per-step sessions into `out/` next to the stream — the same
+evidence the Actions artifact uploads. `sim/assert-workflow.sh` checks a
+finished run dir against the five proofs (spawn tools live, parallelism
+reached, wall time, gates settled, fail-closed on a hostile cap knob).
+
 ## The run dir
 
 Runs land in `sim/runs/<timestamp>/`:
@@ -35,6 +55,8 @@ Runs land in `sim/runs/<timestamp>/`:
 | `container.log` | everything the container printed |
 | `out/outputs.env` | the action-shaped outputs (below) |
 | `out/stream.jsonl` | the stream-json transcript |
+| `out/journal.jsonl` | the workflow run journal, workflow mission only |
+| `out/sessions/` | the per-step session transcripts, workflow mission only |
 | `tmp/` | the mounted `RUNNER_TEMP`, holding the prompt file |
 | `workspace/` | the clone the mission ran against |
 
@@ -54,7 +76,7 @@ run dir is kept as evidence.
 |---|---|
 | `schema` | manifest shape version (`1`) |
 | `status` | `cloning`, `clone-failed`, or `completed` |
-| `task`, `mission` | the task file that ran; the mission command (`run`) |
+| `task`, `mission`, `workflow` | the task file that ran; the mission command (`run`); the workflow plan name (workflow mission only) |
 | `repo`, `clone_commit` | cloned URL and the cloned commit SHA |
 | `image`, `image_id` | the sim image tag and its docker digest |
 | `binaries` | `sha256` of both release binaries, from `dist/checksums.txt` |
@@ -82,7 +104,13 @@ Environment overrides read by `run-sim.sh` at run time:
 | `CRAFT_AGENT_RESULT_TRUNCATE_BYTES` | `4096` | bytes of each tool result kept verbatim in the prompt; oversized results ride as head plus a spill pointer |
 | `CRAFT_AGENT_EGRESS_ALLOWLIST` | unset | hosts bash commands may talk to; unset or empty means ungated |
 | `CRAFT_AGENT_WRITE_REPO` | unset | `owner/name` the gh tool may write to; unset or empty means ungated |
+| `CRAFT_AGENT_SUBAGENT_MAX_DEPTH` | `2` | subagent tree depth; `0` disables spawning |
+| `CRAFT_AGENT_SUBAGENT_MAX_TOTAL` | `32` | subagents admitted per run, cumulative |
+| `CRAFT_AGENT_SUBAGENT_MAX_CONCURRENCY` | `4` | subagents running at once, tree-wide |
+| `CRAFT_AGENT_REQUEST_TIMEOUT_SECS` | client default | one model call's deadline |
 | `CRAFT_AGENT_READ_ROOTS` | `/runner/temp` | extra read-only roots for read_file/glob/grep, comma separated; the file tools read absolute paths inside them |
+| `CRAFT_AGENT_MISSION` | `run` | `run`, `digest`, or `workflow` |
+| `CRAFT_AGENT_WORKFLOW` | unset | the plan name, workflow mission only |
 
 ## Task files
 
@@ -95,18 +123,23 @@ the same seam the action's `prompt` input fills.
 
 `out/outputs.env` mirrors the action's `GITHUB_OUTPUT` block:
 
-- `conclusion` — `success`, `error`, `max-turns`, `budget`, or `denied`
+- `conclusion` — `success`, `error`, `max-turns`, `budget`, `denied`, or `failed` (workflow mission)
 - `exit-code` — the container's typed exit code
 - `digest-path` — the digest markdown, digest mission on success only
 - `stream` — the transcript path relative to the run dir
+- `journal` — the workflow journal path, workflow mission only
+- `sessions` — the per-step sessions directory, workflow mission only
 - `artifacts-owned` — `true` when the mounts were chowned to the invoking user, `false` when a chown failed, `na` when no host uid was passed
-- `final-message` — the terminal `run_finished` detail, heredoc-quoted
+- `final-message` — the terminal `run_finished` detail, or the workflow
+  report's failed step and skipped count, heredoc-quoted
 
 `run-sim.sh` carries `exit-code` into the manifest's `exit_code` and
 `artifacts-owned` into `artifacts_owned` (null when the run produced no
 outputs.env).
 
-Exit codes follow the documented taxonomy: 0 success, 2 max-turns,
-3 budget, 4 denied-path; anything else maps to `error`, and a nonzero exit
-prints the last stream events into the log. `run-sim.sh` prints the
-conclusion, exit code, stream path, and final message when the run ends.
+Exit codes follow the documented taxonomy: the mission run maps
+0 success, 2 max-turns, 3 budget, 4 denied-path; the workflow run maps
+0 success, **1 a failed step or gate**, 2 max-turns, 3 budget; anything
+else maps to `error`, and a nonzero exit prints the last stream events
+into the log. `run-sim.sh` prints the conclusion, exit code, stream
+path, journal and session paths, and final message when the run ends.

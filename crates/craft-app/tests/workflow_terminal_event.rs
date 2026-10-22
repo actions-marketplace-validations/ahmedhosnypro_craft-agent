@@ -47,7 +47,7 @@ fn workflow_finished_waits_out_a_full_queue_instead_of_dropping() {
         "base-model".to_string(),
         workspace.clone(),
         run_dir.join("sessions"),
-        plan.limits.max_total_tokens,
+        Some(plan.limits.max_total_tokens),
         None,
         Some(3),
         agents,

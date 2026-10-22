@@ -180,7 +180,7 @@ async fn a_budget_exit_answers_pending_calls_so_the_record_resumes() {
     let path = session_path("budget-resume");
     let provider = FakeProvider::new(vec![tool_turn("c1", "scripted", "{}", usage(15, 10))]);
     let mut cfg = config(path.clone());
-    cfg.max_total_tokens = 20;
+    cfg.max_total_tokens = Some(20);
     let runner = Runner::new(provider, registry_with_ok("scripted", "out"), cfg);
     let (outcome, _) = run_collect(&runner, "spend").await;
     assert_eq!(outcome.exit_code(), 3);

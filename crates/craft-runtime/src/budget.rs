@@ -44,12 +44,13 @@ pub(crate) fn sum_usage(running: Usage, turn: Usage) -> Usage {
 /// bucket, so the cap bounds the full context the provider processed —
 /// cached prefixes included — and the sum matches the provider's own
 /// per-turn totals without overlap.
-pub(crate) fn budget_status(total: &Usage, max: u64) -> Option<String> {
+pub(crate) fn budget_status(total: &Usage, max: Option<u64>) -> Option<String> {
     if total.incomplete {
         return Some(String::from(
             "token budget cannot be verified: the provider reported incomplete usage",
         ));
     }
+    let max = max?;
     let spent = total
         .input_tokens
         .saturating_add(total.cache_read_tokens)

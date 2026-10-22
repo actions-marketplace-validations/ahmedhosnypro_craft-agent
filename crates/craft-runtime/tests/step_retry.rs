@@ -291,7 +291,7 @@ async fn the_budget_guard_wins_over_a_replay() {
         usage_only_turn(usage(30, 0)),
     ]);
     let mut cfg = config(3);
-    cfg.max_total_tokens = 50;
+    cfg.max_total_tokens = Some(50);
     let runner = Runner::new(provider.clone(), registry_with_ok("scripted", "x"), cfg);
     let (outcome, events) = run_collect(&runner, "go").await;
 

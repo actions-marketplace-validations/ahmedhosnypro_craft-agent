@@ -88,7 +88,7 @@ impl CapSpec {
         knob: ENV_MAX_TOTAL,
         default: 32,
         min: 1,
-        max: 256,
+        max: 1024,
     };
     const CONCURRENCY: Self = Self {
         knob: ENV_MAX_CONCURRENCY,
@@ -129,7 +129,7 @@ fn parse_cap(spec: CapSpec, raw: Option<String>) -> Result<u32, String> {
 #[derive(Debug, Clone)]
 pub struct SubagentSettings {
     pub caps: SubagentCaps,
-    pub run_token_cap: u64,
+    pub run_token_cap: Option<u64>,
     pub per_request_tokens: u32,
     pub default_system_prompt: String,
     pub catalog: Arc<AgentCatalog>,
@@ -209,7 +209,7 @@ pub(crate) struct HubState {
 }
 
 pub(crate) struct AdmittedChild {
-    pub(crate) slice: u64,
+    pub(crate) slice: Option<u64>,
     pub(crate) profile: String,
 }
 
@@ -327,24 +327,16 @@ impl SubagentHub {
         tokens(&state.child_settled).saturating_add(state.in_flight)
     }
 
-    /// The honest remaining run budget at this moment.
-    pub fn budget_remaining(&self) -> u64 {
+    /// The honest remaining run budget at this moment; 0 when the run
+    /// is unlimited.
+    pub fn budget_remaining(&self) -> Option<u64> {
         let state = self.lock_state();
-        self.settings
-            .run_token_cap
-            .saturating_sub(tokens(&state.parent_spent))
-            .saturating_sub(Self::committed(&state))
-    }
-
-    /// The default per-member slice when `maxTokens` is absent: the
-    /// remaining run budget, shared evenly by a batch.
-    pub fn default_slice(&self, count: u32) -> u64 {
-        let remaining = self.budget_remaining();
-        if count > 1 {
-            remaining / u64::from(count)
-        } else {
-            remaining
-        }
+        Some(
+            self.settings
+                .run_token_cap?
+                .saturating_sub(tokens(&state.parent_spent))
+                .saturating_sub(Self::committed(&state)),
+        )
     }
 
     pub fn publish_parent(&self, total: Usage) {

@@ -63,7 +63,7 @@ pub fn build_run_config(
         config.max_turns = max_turns;
     }
     if let Some(max_tokens) = run.max_tokens {
-        config.max_total_tokens = max_tokens;
+        config.max_total_tokens = Some(max_tokens);
     }
     if let Some(secs) = run.idle_timeout_secs {
         config.idle_timeout = Some(Duration::from_secs(secs));

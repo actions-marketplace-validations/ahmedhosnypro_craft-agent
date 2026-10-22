@@ -50,7 +50,7 @@ const PROPS: &[Prop] = &[
         name: "maxTokens",
         ty: Schema::Int,
         required: false,
-        desc: "Per-member token slice; default splits the remaining budget.",
+        desc: "Per-member token budget; omitted means unlimited.",
     },
     Prop {
         name: "timeoutSecs",

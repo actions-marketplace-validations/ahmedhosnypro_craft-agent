@@ -34,7 +34,7 @@ pub fn digest_registry() -> Registry {
 pub struct TurnConfig {
     pub workspace_root: PathBuf,
     pub max_turns: u32,
-    pub max_total_tokens: u64,
+    pub max_total_tokens: Option<u64>,
     pub idle_timeout: Option<Duration>,
 }
 

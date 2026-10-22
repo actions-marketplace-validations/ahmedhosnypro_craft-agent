@@ -3,8 +3,8 @@
 //! Numbers are bounded, prompts byte-capped, the template fill uses
 //! the exact placeholder, and duplicate filled prompts are rejected
 //! naming their 1-based indices. A validated request carries the
-//! resolved profile, per-member prompts, turn cap, token slice, and
-//! wall clock.
+//! resolved profile, per-member prompts, turn cap, token budget, and
+//! wall clock; an absent `maxTokens` is unlimited.
 
 use craft_core::agents::AgentFile;
 use craft_core::subagent::spec::{
@@ -13,14 +13,14 @@ use craft_core::subagent::spec::{
 };
 use serde_json::Value;
 
-use crate::subagent::{SubagentHub, SubagentWiring};
+use crate::subagent::SubagentWiring;
 
 /// One validated spawn request, shared by both tools.
 pub(crate) struct SpawnRequest {
     pub(crate) profile: AgentFile,
     pub(crate) members: Vec<String>,
     pub(crate) max_turns: u32,
-    pub(crate) slice: u64,
+    pub(crate) slice: Option<u64>,
     pub(crate) timeout_secs: Option<u64>,
     pub(crate) batch: bool,
 }
@@ -96,12 +96,6 @@ fn resolve_turns(arg: Option<u64>, profile: &AgentFile) -> u32 {
     )
 }
 
-/// Resolves the per-member token slice: the spawn arg, else the
-/// remaining run budget shared evenly by a batch.
-fn resolve_slice(arg: Option<u64>, hub: &SubagentHub, count: u32) -> u64 {
-    arg.unwrap_or_else(|| hub.default_slice(count))
-}
-
 /// Resolves the wall-clock cap: an explicit 0 disables it, an absent
 /// arg inherits the profile's `timeoutSecs`.
 fn resolve_timeout(arg: Option<u64>, profile: &AgentFile) -> Option<u64> {
@@ -131,7 +125,7 @@ pub(crate) fn plan_single(wiring: &SubagentWiring, args: &Value) -> Result<Spawn
     let profile = wiring.hub.profile(&agent)?;
     Ok(SpawnRequest {
         max_turns: resolve_turns(max_turns, &profile),
-        slice: resolve_slice(max_tokens, &wiring.hub, 1),
+        slice: max_tokens,
         timeout_secs: resolve_timeout(timeout_secs, &profile),
         members: vec![prompt],
         profile,
@@ -165,7 +159,7 @@ pub(crate) fn plan_batch(wiring: &SubagentWiring, args: &Value) -> Result<SpawnR
     let members: Vec<String> = specs.into_iter().map(|spec| spec.prompt).collect();
     Ok(SpawnRequest {
         max_turns: resolve_turns(max_turns, &profile),
-        slice: resolve_slice(max_tokens, &wiring.hub, members.len() as u32),
+        slice: max_tokens,
         timeout_secs: resolve_timeout(timeout_secs, &profile),
         members,
         profile,

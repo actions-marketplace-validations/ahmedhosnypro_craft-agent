@@ -151,7 +151,7 @@ pub fn rig(spec: RigSpec, provider: Arc<FakeProvider>, agents: Vec<AgentFile>) -
     });
     let settings = craft_runtime::SubagentSettings {
         caps: spec.caps,
-        run_token_cap: spec.token_cap,
+        run_token_cap: Some(spec.token_cap),
         per_request_tokens: 1024,
         default_system_prompt: String::from("Base prompt."),
         catalog: catalog(agents),

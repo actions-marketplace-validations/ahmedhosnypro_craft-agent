@@ -126,7 +126,7 @@ async fn assemble<P: Provider + Send + Sync>(
     let turn_config = TurnConfig {
         workspace_root: ctx.options.workspace_root.clone(),
         max_turns: ctx.options.max_turns,
-        max_total_tokens: ctx.options.max_total_tokens,
+        max_total_tokens: Some(ctx.options.max_total_tokens),
         idle_timeout: ctx.options.idle_timeout,
     };
     let report: TurnReport = run_turn(provider, &turn_config, &prompt, bundle).await?;

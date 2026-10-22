@@ -7,7 +7,8 @@
 mod panel;
 
 pub use panel::{
-    MAX_ISSUES, MergedVerdict, SeatVerdict, merge_seats, merged_json, parse_seat, run_panel,
+    MAX_ISSUES, MAX_SEAT_REPAIRS, MergedVerdict, SeatVerdict, merge_seats, merged_json, parse_seat,
+    run_panel,
 };
 
 use panel::{MAX_ISSUE_CHARS, json_object};

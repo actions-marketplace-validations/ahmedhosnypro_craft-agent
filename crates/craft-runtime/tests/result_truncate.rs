@@ -298,7 +298,7 @@ async fn an_unwritable_spill_root_still_completes_the_run() {
 async fn the_budget_guard_still_runs_before_completion() {
     let root = spill_root("budget");
     let mut cfg = config(4096, 20, &root);
-    cfg.max_total_tokens = 100;
+    cfg.max_total_tokens = Some(100);
     let big = payload(BIG);
     let provider = FakeProvider::new(vec![
         tool_turn("c1", "scripted", "{}", usage(60, 0)),

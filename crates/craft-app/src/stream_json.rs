@@ -163,9 +163,13 @@ fn write_subagent_started(out: &mut dyn Write, event: &RuntimeEvent) -> io::Resu
         Some(secs) => format!("{secs}s"),
         None => String::from("none"),
     };
+    let budget = match max_tokens {
+        Some(tokens) => tokens.to_string(),
+        None => String::from("unlimited"),
+    };
     writeln!(
         out,
-        "[subagent turn {turn}] {id} `{profile}` started: max_turns {max_turns} slice {max_tokens} timeout {timeout}"
+        "[subagent turn {turn}] {id} `{profile}` started: max_turns {max_turns} budget {budget} timeout {timeout}"
     )
 }
 

@@ -11,11 +11,12 @@ use crate::events::RuntimeEvent;
 use crate::subagent::{SubagentHub, SubagentWiring, tokens};
 use craft_core::subagent::{ChildStop, DETAIL_MAX_CHARS};
 
-/// One admission's batch shape: the per-child token slice and the
-/// member count, reserved jointly before any launch.
+/// One admission's batch shape: the per-child token budget and the
+/// member count, reserved jointly before any launch. A None budget is
+/// unlimited and reserves nothing.
 #[derive(Debug, Clone, Copy)]
 pub struct AdmitBatch {
-    pub slice: u64,
+    pub slice: Option<u64>,
     pub count: u32,
 }
 
@@ -26,7 +27,7 @@ pub(crate) enum HubEvent {
         id: String,
         profile: String,
         max_turns: u32,
-        max_tokens: u64,
+        max_tokens: Option<u64>,
         timeout_secs: Option<u64>,
     },
     Finished {
@@ -93,7 +94,7 @@ impl SubagentHub {
         let AdmitBatch { slice, count } = batch;
         let caps = self.settings().caps;
         let mut state = self.lock_state();
-        if slice == 0 {
+        if slice == Some(0) {
             return Err(String::from(
                 "token budget: no remaining budget for subagents; give the spawn a smaller maxTokens or finish with less spend",
             ));
@@ -116,13 +117,15 @@ impl SubagentHub {
                 state.running, caps.max_concurrency
             ));
         }
-        let need = slice.saturating_mul(u64::from(count));
-        let spent = tokens(&state.parent_spent).saturating_add(SubagentHub::committed(&state));
-        if spent.saturating_add(need) > self.settings().run_token_cap {
-            return Err(format!(
-                "token budget: this spawn needs {need} tokens but only {} remain of the run budget",
-                self.settings().run_token_cap.saturating_sub(spent)
-            ));
+        let need = slice.unwrap_or(0).saturating_mul(u64::from(count));
+        if let Some(cap) = self.settings().run_token_cap {
+            let spent = tokens(&state.parent_spent).saturating_add(SubagentHub::committed(&state));
+            if spent.saturating_add(need) > cap {
+                return Err(format!(
+                    "token budget: this spawn needs {need} tokens but only {} remain of the run budget",
+                    cap.saturating_sub(spent)
+                ));
+            }
         }
         let mut ids = Vec::with_capacity(count as usize);
         for _ in 0..count {
@@ -190,7 +193,7 @@ impl SubagentHub {
         let mut state = self.lock_state();
         for id in ids {
             if let Some(child) = state.admitted.remove(id) {
-                state.in_flight = state.in_flight.saturating_sub(child.slice);
+                state.in_flight = state.in_flight.saturating_sub(child.slice.unwrap_or(0));
             }
         }
     }
@@ -218,10 +221,15 @@ impl SubagentHub {
         });
     }
 
-    /// The honest remaining run budget over an already-held state.
-    pub(crate) fn remaining(cap: &u64, state: &crate::subagent::HubState) -> u64 {
-        cap.saturating_sub(tokens(&state.parent_spent))
-            .saturating_sub(SubagentHub::committed(state))
+    /// The honest remaining run budget over an already-held state;
+    /// u64::MAX is the unlimited sentinel.
+    pub(crate) fn remaining(cap: &Option<u64>, state: &crate::subagent::HubState) -> u64 {
+        match cap {
+            Some(cap) => cap
+                .saturating_sub(tokens(&state.parent_spent))
+                .saturating_sub(SubagentHub::committed(state)),
+            None => u64::MAX,
+        }
     }
 
     /// Exactly-once settle per child id — a second settle for the
@@ -238,7 +246,7 @@ impl SubagentHub {
             return Self::remaining(&self.settings().run_token_cap, &state);
         }
         state.child_settled = crate::budget::sum_usage(state.child_settled, report.usage);
-        state.in_flight = state.in_flight.saturating_sub(child.slice);
+        state.in_flight = state.in_flight.saturating_sub(child.slice.unwrap_or(0));
         state.running = state.running.saturating_sub(1);
         let detail = crate::envelope::cap_chars(&report.detail, DETAIL_MAX_CHARS);
         state.events.push_back(HubEvent::Finished {

@@ -127,7 +127,7 @@ fn executor(
         "base-model".to_string(),
         workspace.to_path_buf(),
         run_dir.join("sessions"),
-        plan.limits.max_total_tokens,
+        Some(plan.limits.max_total_tokens),
         None,
         Some(3),
         agents,

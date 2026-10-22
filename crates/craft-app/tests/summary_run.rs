@@ -137,7 +137,7 @@ async fn a_real_run_summary_carries_its_deliverables() {
     let mut config = RunConfig::new(dir.clone());
     config.session_path = Some(session_path);
     config.max_turns = 4;
-    config.max_total_tokens = 1_000_000;
+    config.max_total_tokens = Some(1_000_000);
     let runner = Runner::new(provider, registry, config);
     let outcome = runner.run("open the PR", |_| {}).await;
     assert_eq!(outcome.exit_code(), 0, "the scripted run completes");

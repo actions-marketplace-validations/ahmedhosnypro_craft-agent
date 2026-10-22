@@ -156,7 +156,7 @@ fn execute_workflow_inner(
         env_config.model.clone(),
         workspace_root.clone(),
         run_dir.join("sessions"),
-        cli.max_tokens.unwrap_or(plan_spec.limits.max_total_tokens),
+        Some(cli.max_tokens.unwrap_or(plan_spec.limits.max_total_tokens)),
         cli.idle_timeout_secs.map(Duration::from_secs),
         None,
         agents,

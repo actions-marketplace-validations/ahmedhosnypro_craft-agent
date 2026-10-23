@@ -138,7 +138,14 @@ fn prepare_step_child(
     deny_read.extend(step.deny_read.iter().cloned());
     let mut deny_write = agent.deny_write.clone();
     deny_write.extend(step.deny_write.iter().cloned());
-    let session_path = knobs.sessions_dir.join(format!("{}.jsonl", step.id));
+    // A judge panel runs its seats over one step id; the seat index
+    // keeps each transcript distinct, so a panel's three seats never
+    // interleave into one file.
+    let session_stem = match step.seat {
+        Some(seat) => format!("{}-seat{}", step.id, seat + 1),
+        None => step.id.clone(),
+    };
+    let session_path = knobs.sessions_dir.join(format!("{session_stem}.jsonl"));
     prepare_child(
         agent,
         DEFAULT_SYSTEM_PROMPT,

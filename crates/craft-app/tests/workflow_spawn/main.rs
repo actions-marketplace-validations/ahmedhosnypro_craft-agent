@@ -88,6 +88,13 @@ fn inputs_turns(max_turns: u32) -> StepInputs {
     }
 }
 
+fn inputs_seat(seat: u32) -> StepInputs {
+    StepInputs {
+        seat: Some(seat),
+        ..inputs()
+    }
+}
+
 /// The executor over one pre-resolved profile; the step's own agent
 /// map and the hub's scratch catalog are both in-memory.
 fn executor_over(
@@ -240,4 +247,33 @@ async fn a_step_fanout_streams_live_on_the_run_sink() {
     }
     assert_eq!(started, 1, "the child launch reached the run sink");
     assert_eq!(finished, 1, "the child settle reached the run sink");
+}
+
+/// A panel's seats share the step id but not the transcript: each
+/// seat's session file is distinct, so three concurrent seats never
+/// interleave into one file and a crash-resume replays them apart.
+#[tokio::test]
+async fn a_panels_seats_keep_distinct_session_files() {
+    let provider = FakeProvider::new(vec![text_reply("seat ok", usage(1, 1))]);
+    let rig = rig("spawn-seats").expect("rig");
+    let executor = executor_over(&rig, provider, step_agent_profile());
+    for seat in [0, 1, 2] {
+        let outcome = executor
+            .execute(inputs_seat(seat))
+            .await
+            .expect("seat runs");
+        assert_eq!(outcome.conclusion, StepConclusion::Success);
+    }
+    for (seat, name) in [
+        (0u32, "s1-seat1.jsonl"),
+        (1, "s1-seat2.jsonl"),
+        (2, "s1-seat3.jsonl"),
+    ] {
+        let path = rig.workspace.join("sessions").join(name);
+        assert!(path.is_file(), "seat {} lands in {name}", seat + 1);
+    }
+    assert!(
+        !rig.workspace.join("sessions").join("s1.jsonl").is_file(),
+        "the un-suffixed step file is never written by a seat"
+    );
 }

@@ -113,7 +113,7 @@ fn route(prompt: &str, malformed: &AtomicU32) -> Vec<Result<ModelEvent, Provider
         call(
             "spawn-prs",
             "spawn_agents",
-            r#"{"agent":"sim-classifier","promptTemplate":"PR {{item}} — write one verdict file","items":["app-a#101","app-a#102","app-a#103","app-b#201","app-b#202","app-c#301"],"maxTurns":10000,"timeoutSecs":0}"#,
+            r#"{"agent":"sim-classifier","promptTemplate":"PR {{item}} — write one verdict file","items":["app-a#101","app-a#102","app-a#103","app-b#201","app-b#202","app-c#301"],"maxTurns":10000,"timeoutSecs":1800}"#,
         )
     } else if prompt.starts_with("PR ") {
         let pr = prompt.trim_start_matches("PR ").trim();
@@ -162,31 +162,31 @@ fn route(prompt: &str, malformed: &AtomicU32) -> Vec<Result<ModelEvent, Provider
         call(
             "spawn-clones",
             "spawn_agents",
-            r#"{"agent":"sim-cloner","promptTemplate":"CLONE {{item}} — record your outcome locally","items":["app-a|crates/ui","app-b|crates/engine","app-c|crates/geom","app-d|crates/text","app-e|crates/gpu","app-f|crates/mcp"],"maxTurns":10000,"timeoutSecs":0}"#,
+            r#"{"agent":"sim-cloner","promptTemplate":"CLONE {{item}} — record your outcome locally","items":["app-a|crates/ui","app-b|crates/engine","app-c|crates/geom","app-d|crates/text","app-e|crates/gpu","app-f|crates/mcp"],"maxTurns":10000,"timeoutSecs":1800}"#,
         )
     } else if prompt.contains("SIM PHASE 2") {
         call(
             "spawn-batches",
             "spawn_agents",
-            r#"{"agent":"sim-classifier","promptTemplate":"BATCH {{item}} — classify every PR in the batch","items":["batch-01|app-a#101;title a1|app-a#102;title a2|app-a#103;title a3","batch-02|app-b#201;title b1|app-b#202;title b2|app-c#301;title c1"],"maxTurns":10000,"timeoutSecs":0}"#,
+            r#"{"agent":"sim-classifier","promptTemplate":"BATCH {{item}} — classify every PR in the batch","items":["batch-01|app-a#101;title a1|app-a#102;title a2|app-a#103;title a3","batch-02|app-b#201;title b1|app-b#202;title b2|app-c#301;title c1"],"maxTurns":10000,"timeoutSecs":1800}"#,
         )
     } else if prompt.contains("SIM DRAFT — file") {
         call(
             "spawn-filers",
             "spawn_agents",
-            r#"{"agent":"sim-filer","promptTemplate":"ITEM {{item}} — write the draft locally","items":["finding-one|app-a#101","finding-two|app-b#201"],"maxTurns":10000,"timeoutSecs":0}"#,
+            r#"{"agent":"sim-filer","promptTemplate":"ITEM {{item}} — write the draft locally","items":["finding-one|app-a#101","finding-two|app-b#201"],"maxTurns":10000,"timeoutSecs":1800}"#,
         )
     } else if prompt.contains("SIM DRAFT — bump") {
         call(
             "spawn-appliers",
             "spawn_agents",
-            r#"{"agent":"sim-applier","promptTemplate":"ITEM {{item}} — write the branch package locally","items":["bump-one|app-a|rev-abc","bump-two|app-b|rev-abc"],"maxTurns":10000,"timeoutSecs":0}"#,
+            r#"{"agent":"sim-applier","promptTemplate":"ITEM {{item}} — write the branch package locally","items":["bump-one|app-a|rev-abc","bump-two|app-b|rev-abc"],"maxTurns":10000,"timeoutSecs":1800}"#,
         )
     } else if prompt.contains("SIM ROLLUP — draft") {
         call(
             "spawn-rollup",
             "spawn_agent",
-            r#"{"agent":"sim-rollup","prompt":"ROLLUP state — write the three delivery drafts locally","maxTurns":10000,"timeoutSecs":0}"#,
+            r#"{"agent":"sim-rollup","prompt":"ROLLUP state — write the three delivery drafts locally","maxTurns":10000,"timeoutSecs":1800}"#,
         )
     } else if prompt.contains("SIM COMMIT") {
         text("commit recorded: run-ledger/outcomes/row.md")

@@ -4,11 +4,16 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use craft_core::agents::{AgentFile, CatalogHit, load_catalog};
 use craft_providers::backend::Backend;
-use craft_runtime::RuntimeEvent;
+use craft_runtime::{
+    DEFAULT_REQUEST_TOKENS, RuntimeEvent, SubagentCaps, SubagentHub, SubagentSettings,
+    SubagentWiring,
+};
+use craft_tools::ToolLimits;
 use craft_workflow::plan::{ArgKind, ArgValue};
 use craft_workflow::run::{args_digest, run_id_for};
 use craft_workflow::{Journal, WorkflowError, WorkflowPlan, plan, resume_workflow, run_workflow};
@@ -17,6 +22,7 @@ use crate::cli::WorkflowCli;
 use crate::config::{EnvConfig, env_from_process, mount_backend, resolve_env_config};
 use crate::error::AppError;
 use crate::event_writer;
+use crate::prompt::DEFAULT_SYSTEM_PROMPT;
 use crate::redaction;
 use crate::stream_json;
 use crate::summary;
@@ -88,6 +94,48 @@ pub fn resolve_step_agents(
     Ok(agents)
 }
 
+/// The workflow run's subagent hub: mounted once per run over the
+/// default model's backend and shared by every step, so a fan-out
+/// step's registry carries the spawn pair while the run's caps,
+/// catalog, and token pool bind the whole tree. A mount failure
+/// aborts the run — a step must never silently degrade to serial
+/// work because its hub was missing.
+fn mount_workflow_hub(
+    env_config: &EnvConfig,
+    workspace_root: &Path,
+    run_token_cap: Option<u64>,
+    idle_timeout: Option<Duration>,
+    sessions_dir: &Path,
+) -> Result<SubagentWiring, AppError> {
+    let caps = SubagentCaps::from_env().map_err(|detail| AppError::SubagentCap { detail })?;
+    if caps.max_depth == 0 {
+        return Err(AppError::SubagentCap {
+            detail: String::from(
+                "CRAFT_AGENT_SUBAGENT_MAX_DEPTH is 0 — workflow steps could not spawn subagents",
+            ),
+        });
+    }
+    let catalog =
+        load_catalog(workspace_root).map_err(|source| AppError::WorkflowCatalog { source })?;
+    let settings = SubagentSettings {
+        caps,
+        run_token_cap,
+        per_request_tokens: DEFAULT_REQUEST_TOKENS,
+        default_system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+        catalog: Arc::new(catalog),
+        limits: ToolLimits::default(),
+        workspace_root: workspace_root.to_path_buf(),
+        parent_session: Some(sessions_dir.join("subagents.jsonl")),
+        idle_timeout,
+        step_attempts: None,
+    };
+    let provider = production_mount(env_config.clone())(&env_config.model)
+        .map_err(|detail| AppError::SubagentCap { detail })?;
+    Ok(SubagentWiring::root(SubagentHub::mounting(
+        settings, provider,
+    )))
+}
+
 /// The run-or-resume switch over one journal: a fresh journal runs, a
 /// non-empty one resumes — a finished journal replays purely.
 pub async fn run_or_resume<E: craft_workflow::engine::StepExecutor + Sync>(
@@ -151,17 +199,32 @@ fn execute_workflow_inner(
     })?;
     let journal = Journal::open(&run_dir.join("journal.jsonl"))
         .map_err(|source| AppError::Workflow { source })?;
+    let sessions_dir = run_dir.join("sessions");
+    let run_token_cap = Some(cli.max_tokens.unwrap_or(plan_spec.limits.max_total_tokens));
+    let idle_timeout = cli.idle_timeout_secs.map(Duration::from_secs);
+    let hub = mount_workflow_hub(
+        &env_config,
+        &workspace_root,
+        run_token_cap,
+        idle_timeout,
+        &sessions_dir,
+    )?;
+    let (sink, writer) = spawn_workflow_writer(cli.output_format, redactor)?;
+    // The executor holds its own sink clone: a step's subagent launches
+    // and settles ride the same event stream the workflow frames do.
+    let step_sink = sink.clone();
     let executor = WorkflowExecutor::new(
         production_mount(env_config.clone()),
         env_config.model.clone(),
         workspace_root.clone(),
-        run_dir.join("sessions"),
-        Some(cli.max_tokens.unwrap_or(plan_spec.limits.max_total_tokens)),
-        cli.idle_timeout_secs.map(Duration::from_secs),
+        sessions_dir,
+        run_token_cap,
+        idle_timeout,
         None,
         agents,
-    );
-    let (sink, writer) = spawn_workflow_writer(cli.output_format, redactor)?;
+    )
+    .with_subagents(Some(hub))
+    .with_sink(Some(step_sink));
     sink.emit(RuntimeEvent::WorkflowStarted {
         run_id: run_id.clone(),
         name: plan_spec.name.clone(),

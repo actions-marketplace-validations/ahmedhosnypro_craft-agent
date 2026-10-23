@@ -10,6 +10,11 @@ image="craft-agent-sim:sim"
 task="${1:-open-pr-01}"
 triple="x86_64-unknown-linux-musl"
 repo_url="${CRAFT_AGENT_REPO_URL:-https://github.com/ahmedhosnypro/craft-agent.git}"
+# The mission under rehearsal: run (the default), digest, or workflow —
+# a workflow run clones the repo that carries the plan and executes it
+# through the workflow CLI, exactly like the action's mode switch.
+mission="${CRAFT_AGENT_MISSION:-run}"
+workflow="${CRAFT_AGENT_WORKFLOW:-}"
 env_file="$repo_root/.env"
 provider="${CRAFT_AGENT_PROVIDER:-openai}"
 model="${CRAFT_AGENT_MODEL:-glm-5.3-flash}"
@@ -27,22 +32,40 @@ fail() {
 export PATH="$HOME/.cargo/bin:$PATH"
 
 [ -f "$env_file" ] || fail "missing ${env_file} — the gateway knobs live there"
-command -v gh >/dev/null || fail "gh is required on the host for the clone"
 command -v docker >/dev/null || fail "docker is required on the host"
 
-set -a
-. "$env_file"
-set +a
-[ -n "${TEST_BYOK_API_KEY:-}" ] || fail "TEST_BYOK_API_KEY is empty in .env"
-[ -n "${TEST_BYOK_BASE_URL:-}" ] || fail "TEST_BYOK_BASE_URL is empty in .env"
+# The simulation needs no gateway and no token: it drives a scripted
+# model entirely locally.
+if [ "$mission" != "simulate" ]; then
+  command -v gh >/dev/null || fail "gh is required on the host for the clone"
+  set -a
+  . "$env_file"
+  set +a
+  [ -n "${TEST_BYOK_API_KEY:-}" ] || fail "TEST_BYOK_API_KEY is empty in .env"
+  [ -n "${TEST_BYOK_BASE_URL:-}" ] || fail "TEST_BYOK_BASE_URL is empty in .env"
 
-[ -n "${GH_TOKEN:-}" ] || fail "GH_TOKEN is not set — add it to .env or export it"
-login="$(GH_TOKEN="$GH_TOKEN" gh api user --jq .login 2>/dev/null || true)"
-[ -n "$login" ] || fail "GitHub rejected GH_TOKEN — refresh it in .env or the environment"
-GH_TOKEN="$GH_TOKEN" gh repo view "$repo_slug" >/dev/null 2>&1 \
-  || fail "GH_TOKEN cannot read ${repo_slug}"
-OPENAI_API_KEY="$TEST_BYOK_API_KEY"
-OPENAI_BASE_URL="$TEST_BYOK_BASE_URL"
+  [ -n "${GH_TOKEN:-}" ] || fail "GH_TOKEN is not set — add it to .env or export it"
+  login="$(GH_TOKEN="$GH_TOKEN" gh api user --jq .login 2>/dev/null || true)"
+  [ -n "$login" ] || fail "GitHub rejected GH_TOKEN — refresh it in .env or the environment"
+  GH_TOKEN="$GH_TOKEN" gh repo view "$repo_slug" >/dev/null 2>&1 \
+    || fail "GH_TOKEN cannot read ${repo_slug}"
+fi
+
+case "$mission" in
+  run | digest) ;;
+  workflow)
+    [ -n "$workflow" ] ||
+      fail "CRAFT_AGENT_MISSION=workflow needs CRAFT_AGENT_WORKFLOW (the plan name)"
+    ;;
+  simulate)
+    # The judged-workflow simulation drives the full 16-step
+    # architecture over a scripted model: no gateway, no GH_TOKEN, no
+    # network. The host only needs the built integration binary.
+    ;;
+  *) fail "unknown mission '${mission}' — expected run, digest, workflow, or simulate" ;;
+esac
+OPENAI_API_KEY="${TEST_BYOK_API_KEY:-}"
+OPENAI_BASE_URL="${TEST_BYOK_BASE_URL:-}"
 export GH_TOKEN OPENAI_API_KEY OPENAI_BASE_URL
 
 # Build and run share the host network: the container must reach the
@@ -87,7 +110,8 @@ started_at="$(date +%Y-%m-%dT%H:%M:%S%:z)"
 jq -n \
   --arg status "cloning" \
   --arg task "$task" \
-  --arg mission "run" \
+  --arg mission "$mission" \
+  --arg workflow "$workflow" \
   --arg repo "$repo_url" \
   --arg image "$image" \
   --arg image_id "$image_id" \
@@ -102,6 +126,7 @@ jq -n \
     status: $status,
     task: $task,
     mission: $mission,
+    workflow: (if $workflow == "" then null else $workflow end),
     repo: $repo,
     clone_commit: null,
     image: $image,
@@ -135,12 +160,34 @@ update_manifest '.clone_commit = $sha' \
 
 SECONDS=0
 rc=0
+# The simulation's integration binary is built host-side (a debug build
+# of the workspace test) and mounted read-only; nothing else moves.
+sim_bin=""
+if [ "$mission" = "simulate" ]; then
+  sim_bin="${SIMULATE_BIN:-}"
+  if [ -z "$sim_bin" ]; then
+    cargo build -q --tests -p craft-app 2>/dev/null || true
+    sim_bin="$(ls -t "$repo_root"/target/debug/deps/workflow_simulation-* 2>/dev/null |
+      grep -v '\.d$' | head -n 1)"
+  fi
+  [ -n "$sim_bin" ] && [ -x "$sim_bin" ] ||
+    fail "no simulation binary — build with 'cargo test -p craft-app --test workflow_simulation --no-run'"
+fi
+
+sim_mount=()
+if [ -n "$sim_bin" ]; then
+  sim_mount=(-e SIMULATE_BIN=/simulate/bin/workflow_simulation
+    -v "$sim_bin":/simulate/bin/workflow_simulation:ro)
+fi
+
 docker run --rm --network host \
   -e GH_TOKEN \
   -e CRAFT_AGENT_PROVIDER="$provider" \
   -e CRAFT_AGENT_MODEL="$model" \
   -e OPENAI_API_KEY \
   -e OPENAI_BASE_URL \
+  -e CRAFT_AGENT_MISSION="$mission" \
+  -e CRAFT_AGENT_WORKFLOW \
   -e CRAFT_AGENT_MAX_TURNS="${CRAFT_AGENT_MAX_TURNS:-40}" \
   -e CRAFT_AGENT_MAX_TOKENS="${CRAFT_AGENT_MAX_TOKENS:-4000000}" \
   -e CRAFT_AGENT_STEP_RETRIES \
@@ -149,10 +196,15 @@ docker run --rm --network host \
   -e CRAFT_AGENT_RESULT_TRUNCATE_BYTES \
   -e CRAFT_AGENT_EGRESS_ALLOWLIST \
   -e CRAFT_AGENT_WRITE_REPO \
+  -e CRAFT_AGENT_SUBAGENT_MAX_DEPTH \
+  -e CRAFT_AGENT_SUBAGENT_MAX_TOTAL \
+  -e CRAFT_AGENT_SUBAGENT_MAX_CONCURRENCY \
+  -e CRAFT_AGENT_REQUEST_TIMEOUT_SECS \
   -e CRAFT_AGENT_READ_ROOTS="${CRAFT_AGENT_READ_ROOTS:-/runner/temp}" \
   -e CRAFT_AGENT_PROMPT_FILE="/tasks/${task}.md" \
   -e SIM_HOST_UID="$(id -u)" \
   -e SIM_HOST_GID="$(id -g)" \
+  "${sim_mount[@]}" \
   -v "$repo_root/dist":/dist:ro \
   -v "$run_dir/workspace":/workspace \
   -v "$run_dir/out":/out \
@@ -176,6 +228,10 @@ if [ -f "$outputs" ]; then
   printf 'conclusion: %s\n' "${conclusion:-none}"
   printf 'exit-code: %s\n' "${exit_line:-$rc}"
   printf 'stream: %s\n' "${stream_line:-none}"
+  journal_line="$(sed -n 's/^journal=//p' "$outputs" | head -n 1)"
+  sessions_line="$(sed -n 's/^sessions=//p' "$outputs" | head -n 1)"
+  [ -n "$journal_line" ] && printf 'journal: %s\n' "$journal_line"
+  [ -n "$sessions_line" ] && printf 'sessions: %s\n' "$sessions_line"
   printf 'final-message: %s\n' "${final_message:-(empty)}"
 else
   printf 'conclusion: none — the container produced no outputs.env\n'

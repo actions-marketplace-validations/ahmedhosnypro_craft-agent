@@ -96,14 +96,15 @@ git config --global user.email "agent@craft-agent.invalid"
 # binary's own typed validation reports, not a pre-flight harness error.
 mission="${CRAFT_AGENT_MISSION:-run}"
 case "$mission" in
-  run | digest | workflow) ;;
-  *) fail "unknown mission '${mission}' — expected run, digest, or workflow" ;;
+  run | digest | workflow | simulate) ;;
+  *) fail "unknown mission '${mission}' — expected run, digest, workflow, or simulate" ;;
 esac
 
 prompt_file="${RUNNER_TEMP}/prompt.txt"
-if [ "$mission" = "workflow" ]; then
-  # The workflow plan is located from the workspace, like the action's
-  # CRAFT_AGENT_WORKFLOW switch in scripts/run-scan.sh; no prompt file.
+if [ "$mission" = "workflow" ] || [ "$mission" = "simulate" ]; then
+  # Neither takes a prompt file: the workflow plan is located from the
+  # workspace (the action's CRAFT_AGENT_WORKFLOW switch), and the
+  # simulation runs its own mounted binary.
   :
 elif [ -n "${CRAFT_AGENT_PROMPT:-}" ]; then
   printf '%s' "$CRAFT_AGENT_PROMPT" > "$prompt_file"
@@ -127,6 +128,15 @@ if [ "$mission" = "workflow" ]; then
   cmd=(craft-agent workflow
     --workflow "$CRAFT_AGENT_WORKFLOW"
     --output-format stream-json)
+elif [ "$mission" = "simulate" ]; then
+  # The simulation is a standalone integration binary: the judged
+  # workflow's full architecture — waves, gates, appeals, committers —
+  # driven over a scripted model, so it needs no gateway, no token and
+  # no network. It mounts at /simulate/bin and runs in place.
+  sim_bin="${SIMULATE_BIN:-/simulate/bin/workflow_simulation}"
+  [ -x "$sim_bin" ] ||
+    fail "mission=simulate needs an executable at ${sim_bin}"
+  cmd=("$sim_bin" --test-threads=1)
 else
   cmd=(craft-agent "$mission" --max-turns "${CRAFT_AGENT_MAX_TURNS:-40}"
     --max-tokens "${CRAFT_AGENT_MAX_TOKENS:-4000000}")
@@ -165,6 +175,14 @@ if [ "$mission" = "workflow" ]; then
     3) conclusion="budget" ;;
     *) conclusion="error" ;;
   esac
+elif [ "$mission" = "simulate" ]; then
+  # The simulation's binary is a libtest harness: 0 is "every proof
+  # passed", 101 is "at least one proof failed".
+  case "$rc" in
+    0) conclusion="success" ;;
+    101) conclusion="failed" ;;
+    *) conclusion="error" ;;
+  esac
 else
   case "$rc" in
     0) conclusion="success" ;;
@@ -184,6 +202,12 @@ if [ -s "$stream" ]; then
       select(.type == "workflow_finished") | .report |
       "failed_step \(.failed_step // "-") skipped \(.steps | map(select(.status.kind == "skipped")) | length)"
     ' "$stream" 2>/dev/null | tail -n 1 || true)"
+  elif [ "$mission" = "simulate" ]; then
+    # The simulation's stream is libtest output: its result line names
+    # the proofs that passed and the ones that failed.
+    final_message="$(grep -E '^test result:' "$stream" | tail -n 1 || true)"
+    [ -n "$final_message" ] &&
+      final_message="$(grep -E '^test .* \.\.\. (ok|FAILED)' "$stream" | tr '\n' ' ')"
   else
     final_message="$(tail -n 1 "$stream" |
       jq -r 'select(.type == "run_finished") | .detail // ""' 2>/dev/null || true)"

@@ -241,6 +241,17 @@ finished run against the proofs the fix must show — spawn tools live,
 parallelism reached, gates settled, wall time under a ceiling — before
 the workflow ever reaches CI. See `sim/README.md`.
 
+The `simulate` mission is the cheap gate: it drives the judged
+workflow's full 16-step architecture — fan-out waves, panel gates, a
+repaired seat, appeals, committers — over a scripted model with local
+fixtures, so it needs no gateway, no token and no network and settles
+in seconds:
+
+    CRAFT_AGENT_MISSION=simulate bash sim/run-sim.sh
+
+That is the first thing a workflow-mode CI rehearsal runs: the engine's
+wiring is proven before any real gateway spend.
+
 ## Contributing
 
 `just check` is the full gate, mirrored exactly by CI: formatting,

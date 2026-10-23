@@ -13,7 +13,8 @@ download; `sim/run-sim.sh` is the host-side orchestrator.
 Prerequisites: docker, host `gh`, and a repo-root `.env` carrying
 `TEST_BYOK_API_KEY`, `TEST_BYOK_BASE_URL`, and a valid `GH_TOKEN` — the
 same live-corpus knobs the integration tests use. Values are read at run
-time and are never baked into the image or printed.
+time and are never baked into the image or printed. The `simulate`
+mission needs none of those.
 
 One run:
 
@@ -53,6 +54,27 @@ fan-out proofs to the plan under test — a single-profile probe passes
 with `--min-profiles 1`, and the real scan's clone + classify waves
 expect both to be in the hundreds.
 
+### The simulation (`simulate`)
+
+The same architecture, minus the world: one `simulate` mission runs a
+standalone integration binary that drives the judged workflow's full
+16-step plan — fan-out waves, per-PR grandchildren, panel gates, a
+repaired seat, appeals, draft waves, committers, rollup — over a
+**scripted model** and local fixtures. No gateway, no `GH_TOKEN`, no
+network, and it settles in seconds:
+
+    CRAFT_AGENT_MISSION=simulate bash sim/run-sim.sh
+
+The binary is built host-side (`cargo test -p craft-app --test
+workflow_simulation --no-run`), mounted read-only, and its stream is
+libtest output. A green run is `conclusion: success` with all four
+proofs named in the final message: every step settles, the waves launch
+and finish every child with real overlap, the malformed seat is repaired,
+and a hostile hub knob fails closed. This is the cheap gate the
+workflow-mode CI rehearsal runs first — it proves the engine's wiring
+(spawn tools, gate panels, seat repair, draft/commit split) before any
+real gateway spend.
+
 ## The run dir
 
 Runs land in `sim/runs/<timestamp>/`:
@@ -62,7 +84,7 @@ Runs land in `sim/runs/<timestamp>/`:
 | `manifest.json` | run provenance — see below |
 | `container.log` | everything the container printed |
 | `out/outputs.env` | the action-shaped outputs (below) |
-| `out/stream.jsonl` | the stream-json transcript |
+| `out/stream.jsonl` | the stream-json transcript, or the simulation's libtest output |
 | `out/journal.jsonl` | the workflow run journal, workflow mission only |
 | `out/sessions/` | the per-step session transcripts, workflow mission only |
 | `tmp/` | the mounted `RUNNER_TEMP`, holding the prompt file |
@@ -117,8 +139,9 @@ Environment overrides read by `run-sim.sh` at run time:
 | `CRAFT_AGENT_SUBAGENT_MAX_CONCURRENCY` | `4` | subagents running at once, tree-wide |
 | `CRAFT_AGENT_REQUEST_TIMEOUT_SECS` | client default | one model call's deadline |
 | `CRAFT_AGENT_READ_ROOTS` | `/runner/temp` | extra read-only roots for read_file/glob/grep, comma separated; the file tools read absolute paths inside them |
-| `CRAFT_AGENT_MISSION` | `run` | `run`, `digest`, or `workflow` |
+| `CRAFT_AGENT_MISSION` | `run` | `run`, `digest`, `workflow`, or `simulate` |
 | `CRAFT_AGENT_WORKFLOW` | unset | the plan name, workflow mission only |
+| `SIMULATE_BIN` | auto-built | path to the simulation integration binary, simulate mission only |
 
 ## Task files
 
@@ -138,8 +161,9 @@ the same seam the action's `prompt` input fills.
 - `journal` — the workflow journal path, workflow mission only
 - `sessions` — the per-step sessions directory, workflow mission only
 - `artifacts-owned` — `true` when the mounts were chowned to the invoking user, `false` when a chown failed, `na` when no host uid was passed
-- `final-message` — the terminal `run_finished` detail, or the workflow
-  report's failed step and skipped count, heredoc-quoted
+- `final-message` — the terminal `run_finished` detail, the workflow
+  report's failed step and skipped count, or the simulation's proof
+  results, heredoc-quoted
 
 `run-sim.sh` carries `exit-code` into the manifest's `exit_code` and
 `artifacts-owned` into `artifacts_owned` (null when the run produced no

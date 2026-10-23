@@ -43,7 +43,15 @@ fresh clone with the same knobs the action passes, then mirrors the run
 journal and per-step sessions into `out/` next to the stream — the same
 evidence the Actions artifact uploads. `sim/assert-workflow.sh` checks a
 finished run dir against the five proofs (spawn tools live, parallelism
-reached, wall time, gates settled, fail-closed on a hostile cap knob).
+reached, wall time, gates settled, fail-closed on a hostile cap knob):
+
+    bash sim/assert-workflow.sh sim/runs/<run> \
+      [--min-children N] [--min-profiles N] [--max-seconds N]
+
+`--min-children` (default 8) and `--min-profiles` (default 2) size the
+fan-out proofs to the plan under test — a single-profile probe passes
+with `--min-profiles 1`, and the real scan's clone + classify waves
+expect both to be in the hundreds.
 
 ## The run dir
 

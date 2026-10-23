@@ -30,7 +30,7 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v7
       - name: Run the agent
-        uses: ahmedhosnypro/craft-agent@v0.0.8
+        uses: ahmedhosnypro/craft-agent@v0.0.9
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
@@ -45,7 +45,7 @@ jobs:
 
 Supported runners are GitHub-hosted Linux x86_64 and aarch64; any
 other triple fails with an actionable error and never falls back to
-building from source. Pin the action by release tag (`@v0.0.8`) or by
+building from source. Pin the action by release tag (`@v0.0.9`) or by
 full commit SHA (frozen); the `version` input selects the release tag
 the binaries download from.
 
@@ -81,7 +81,7 @@ call never inherits them.
 | `egress-allowlist` | empty | Comma-separated hosts bash commands may talk to; empty means no egress gate. |
 | `write-repo` | empty | `owner/name` the gh tool's write verbs must target; empty means no write gate. |
 | `read-roots` | empty | Extra read-only roots for `read_file`/`glob`/`grep`, comma separated, absolute paths; empty defaults to the runner temp directory, `off` disables the feature. |
-| `version` | `v0.0.8` | Release tag the binaries are downloaded from. |
+| `version` | `v0.0.9` | Release tag the binaries are downloaded from. |
 | `release-repository` | `ahmedhosnypro/craft-agent` | Repository that hosts the release assets. |
 
 No input is ever interpolated into a run script: every input reaches
@@ -228,6 +228,18 @@ that behaves like a GitHub Actions runner. Each run leaves a
 directory carrying a provenance manifest, the container log, the
 action-shaped outputs, the stream transcript, and the workspace the
 mission ran against.
+
+A judged workflow rehearses the same way:
+
+    CRAFT_AGENT_MISSION=workflow CRAFT_AGENT_WORKFLOW=<plan> \
+      bash sim/run-sim.sh
+
+The container runs `craft-agent workflow` against a fresh clone with
+the action's knobs, mirrors the run journal and per-step sessions
+into `out/`, and `sim/assert-workflow.sh sim/runs/<run>` checks the
+finished run against the proofs the fix must show — spawn tools live,
+parallelism reached, gates settled, wall time under a ceiling — before
+the workflow ever reaches CI. See `sim/README.md`.
 
 ## Contributing
 

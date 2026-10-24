@@ -1,10 +1,10 @@
 ---
 name: sim-adopt
-description: "Synthetic rehearsal of the judged adoption workflow: the same 16-step architecture — collect, fan-out waves, judge gates, appeals, draft/commit split — driven by a scripted model over local fixtures, with no network and no real GitHub."
+description: "Synthetic rehearsal of the judged adoption workflow's per-PR architecture: sweep, one detached child per PR, merged gates, committers, rollup."
 args:
   window: { type: string, default: "7h" }
 limits:
-  max-steps: "16"
+  max-steps: "12"
   max-total-turns: "2000"
   max-total-tokens: "1000000"
   max-retries-per-step: "2"
@@ -18,25 +18,29 @@ steps:
     on-failure: stop
     outputs: [collection]
     body: |
-      SIM PHASE 1 — collect and clone: fire ONE spawn_agents call
-      (profile sim-cloner) with six items, one per synthetic app repo,
-      then report the count. Children clone nothing; they record their
-      outcome locally under run-ledger/clone/<app>/.
-  - id: classify
+      SIM SWEEP — the scripted parallel sweep: one bash call runs the
+      collection, the clone sweep, and the digest read concurrently.
+      Children record local artifacts; nothing here decides anything.
+  - id: pr-pipeline
     agent: sim-orchestrator
     needs: [prepare]
-    max-turns: "60"
+    max-turns: "120"
     retry: "0"
     on-failure: stop
-    outputs: [batch-reports]
+    outputs: [verdict-files, draft-paths]
     body: |
-      SIM PHASE 2 — classify: shard the six synthetic PRs into two
-      batches of three and fire ONE spawn_agents call (profile
-      sim-classifier), then report the batch count.
-  - id: classify-gate
+      SIM PIPELINE — one pipeline per PR: fire ONE detached spawn_agents
+      call (profile sim-classifier), one item per PR (six PRs total),
+      carrying `detached: true`. The call returns at admission; then
+      poll with `poll_agents` as each PR's verdict lands and advance
+      that PR immediately — a `rev-sync` verdict gets one detached
+      `spawn_agent` call to sim-applier, a `hoist` or `port` verdict one
+      detached `spawn_agent` call to sim-filer. Two actionable PRs,
+      four irrelevant, no batch shapes, no coordinator.
+  - id: pipeline-gate
     agent: sim-judge
     kind: judge
-    needs: [classify]
+    needs: [pr-pipeline]
     max-turns: "40"
     retry: "1"
     on-failure: stop
@@ -47,14 +51,14 @@ steps:
       merge: majority
       max-feedback: "2"
     body: |
-      GATE:classify — judge the classification step: the batch reports and
-      verdict files under run-ledger/classifier/ must all exist and their
-      counts must match. Count them with one bash pass. Your final
-      message must be exactly the verdict JSON and nothing else.
-  - id: classify-appeal
+      GATE:pipeline — judge the per-PR output: one verdict file per PR
+      under run-ledger/classifier/ and one draft per actionable PR.
+      Count them with one bash pass. Your final message must be exactly
+      the verdict JSON and nothing else.
+  - id: pipeline-appeal
     agent: sim-judge
     kind: judge
-    needs: [classify-gate]
+    needs: [pipeline-gate]
     max-turns: "40"
     retry: "1"
     on-failure: stop
@@ -65,54 +69,11 @@ steps:
       merge: unanimous
       max-feedback: "0"
     body: |
-      GATE:classify-appeal — re-derive the classify-gate rubric yourself
+      GATE:pipeline-appeal — re-derive the pipeline-gate rubric yourself
       and return the verdict JSON as your final message.
-  - id: file-draft
-    agent: sim-orchestrator
-    needs: [classify-appeal]
-    max-turns: "60"
-    retry: "0"
-    on-failure: stop
-    outputs: [filer-outcomes]
-    body: |
-      SIM DRAFT — file: fire ONE spawn_agents call (profile sim-filer)
-      with two items, one per synthetic finding, then report the count.
-  - id: file-gate
-    agent: sim-judge
-    kind: judge
-    needs: [file-draft]
-    max-turns: "40"
-    retry: "1"
-    on-failure: stop
-    deny-write: ["**"]
-    outputs: [verdict]
-    judge:
-      panel: "3"
-      merge: majority
-      max-feedback: "2"
-    body: |
-      GATE:file — judge the drafted findings: both drafts must exist
-      under run-ledger/filer/ and cite their evidence. Return the
-      verdict JSON as your final message.
-  - id: file-appeal
-    agent: sim-judge
-    kind: judge
-    needs: [file-gate]
-    max-turns: "40"
-    retry: "1"
-    on-failure: stop
-    deny-write: ["**"]
-    outputs: [verdict]
-    judge:
-      panel: "1"
-      merge: unanimous
-      max-feedback: "0"
-    body: |
-      GATE:file-appeal — re-derive the file-gate rubric yourself and
-      return the verdict JSON as your final message.
   - id: file-commit
     agent: sim-committer
-    needs: [file-appeal]
+    needs: [pipeline-appeal]
     max-turns: "40"
     retry: "0"
     on-failure: skip
@@ -120,52 +81,9 @@ steps:
     body: |
       SIM COMMIT — file: record one outcome row per ready finding under
       run-ledger/outcomes/, then report the rows.
-  - id: bump-draft
-    agent: sim-orchestrator
-    needs: [classify-appeal]
-    max-turns: "60"
-    retry: "0"
-    on-failure: stop
-    outputs: [applier-outcomes]
-    body: |
-      SIM DRAFT — bump: fire ONE spawn_agents call (profile sim-applier)
-      with two items, one per synthetic bump candidate, then report.
-  - id: bump-gate
-    agent: sim-judge
-    kind: judge
-    needs: [bump-draft]
-    max-turns: "40"
-    retry: "1"
-    on-failure: stop
-    deny-write: ["**"]
-    outputs: [verdict]
-    judge:
-      panel: "3"
-      merge: majority
-      max-feedback: "2"
-    body: |
-      GATE:bump — judge the bump drafts: both branch packages must exist
-      under run-ledger/revsync/ and carry a pin rev. Return the verdict
-      JSON as your final message.
-  - id: bump-appeal
-    agent: sim-judge
-    kind: judge
-    needs: [bump-gate]
-    max-turns: "40"
-    retry: "1"
-    on-failure: stop
-    deny-write: ["**"]
-    outputs: [verdict]
-    judge:
-      panel: "1"
-      merge: unanimous
-      max-feedback: "0"
-    body: |
-      GATE:bump-appeal — re-derive the bump-gate rubric yourself and
-      return the verdict JSON as your final message.
   - id: bump-commit
     agent: sim-committer
-    needs: [bump-appeal]
+    needs: [pipeline-appeal]
     max-turns: "40"
     retry: "0"
     on-failure: skip
@@ -181,8 +99,8 @@ steps:
     on-failure: stop
     outputs: [delivery-drafts]
     body: |
-      SIM ROLLUP — draft: fire ONE spawn_agent call (profile
-      sim-rollup) carrying the state snapshot, then report the paths.
+      SIM ROLLUP — draft: fire ONE spawn_agent call (profile sim-rollup)
+      carrying the state snapshot, then report the paths.
   - id: rollup-gate
     agent: sim-judge
     kind: judge
@@ -229,5 +147,5 @@ steps:
 ---
 
 Simulation rules: this plan is a local rehearsal of the judged adoption
-workflow's architecture. Every artifact is a local file; no GitHub API
-is called and no network is touched.
+workflow's per-PR architecture. Every artifact is a local file; no
+GitHub API is called and no network is touched.

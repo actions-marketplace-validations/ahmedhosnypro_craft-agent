@@ -1,11 +1,12 @@
-//! The judged-workflow simulation: the same 16-step architecture as the
-//! real adoption scan — collect, parallel clone and classify waves,
-//! per-PR grandchildren, panel gates with a repaired seat, appeals,
-//! draft waves, committers, rollup — driven end to end over a scripted
-//! provider with local fixtures and no network. This runs in seconds
-//! and asserts the same five proofs the sim's assert-workflow.sh checks
-//! on a real run: spawn tools live, parallelism reached, every child
-//! settled, gates settled, and the run concluded.
+//! The judged-workflow simulation: the same 10-step per-PR architecture
+//! as the real adoption scan — a scripted parallel sweep, one detached
+//! child per PR advancing independently, stage-2 children spawned as
+//! each PR lands, panel gates with a repaired seat, an appeal, committers
+//! and rollup — driven end to end over a scripted provider with local
+//! fixtures and no network. This runs in seconds and asserts the same
+//! proofs the sim's assert-workflow.sh checks on a real run: spawn tools
+//! live, parallelism reached, every child settled, gates settled, and the
+//! run concluded.
 #![allow(clippy::expect_used)]
 
 mod rig;
@@ -21,7 +22,7 @@ use craft_workflow::{Journal, WorkflowPlan};
 use rig::{Rig, rig as rig_for};
 use scripted::SimProvider;
 
-/// The full 16-step simulation over the driver, returning the report.
+/// The full 10-step simulation over the driver, returning the report.
 fn run_simulation(rig: &Rig) -> Result<craft_workflow::WorkflowReport, Box<dyn std::error::Error>> {
     let plan_spec = WorkflowPlan::parse_file(
         &rig.workspace
@@ -60,7 +61,7 @@ fn the_judged_workflow_simulation_settles_every_step() {
     let rig = rig_for("full");
     let report = run_simulation(&rig).expect("the simulated workflow settles");
     assert_eq!(report.exit_code, 0, "the simulation concludes success");
-    assert_eq!(report.steps.len(), 16, "all sixteen steps settle");
+    assert_eq!(report.steps.len(), 10, "all ten steps settle");
     for step in &report.steps {
         match &step.status {
             craft_workflow::status::StepStatus::Settled { conclusion, .. } => {
@@ -84,9 +85,9 @@ fn the_simulation_proves_spawn_tools_live_and_parallel() {
     // The run's event stream carries one launch and one settle per child.
     let (started, finished, peak) = spawn_counts(&rig.events);
     assert!(
-        started >= 19,
-        "the waves launch every child: clones + batches + grandchildren +\
-         drafts + rollup = {started}"
+        started >= 8,
+        "the fan-out launches every per-PR child plus the stage-2 and\
+         rollup children = {started}"
     );
     assert_eq!(started, finished, "no child is left dangling");
     assert!(
@@ -98,12 +99,22 @@ fn the_simulation_proves_spawn_tools_live_and_parallel() {
         rig.provider.malformed() >= 1,
         "a judge seat answered in prose, forcing the repair loop"
     );
-    // The local artifacts the waves produce exist.
+    // The local artifacts the pipeline produces exist: one verdict file
+    // per PR, the sweep markers, and the rollup drafts.
     assert!(
         rig.workspace
-            .join("run-ledger/clone/app-x/outcome.md")
-            .is_file()
+            .join("run-ledger/prepare/.collect-done")
+            .is_file(),
+        "the scripted sweep recorded its collection marker"
     );
+    for number in ["app-a#101", "app-b#201", "app-c#301"] {
+        assert!(
+            rig.workspace
+                .join(format!("run-ledger/classifier/{number}.verdict"))
+                .is_file(),
+            "PR {number} has a verdict file"
+        );
+    }
     assert!(
         rig.workspace
             .join("run-ledger/rollup/state-body.md")
@@ -124,6 +135,60 @@ fn a_seat_repair_loop_lands_the_verdict() {
         report.failed_step.is_none(),
         "no step fails despite the malformed seat"
     );
+}
+
+#[test]
+fn a_pr_advances_while_its_siblings_are_still_early() {
+    // The per-PR property this architecture exists for: each PR's
+    // journey is its own, so a verdict that lands advances THAT PR to its
+    // stage-2 child without waiting for the rest of the window. The
+    // simulation's ledger and envelopes prove the ordering — the two
+    // actionable PRs each get exactly one stage-2 child, and the four
+    // irrelevant PRs never get one.
+    let rig = rig_for("per-pr");
+    let report = run_simulation(&rig).expect("the simulated workflow settles");
+    assert_eq!(report.exit_code, 0, "{report:?}");
+
+    // Six verdicts: one per PR, never a batch report standing in for six.
+    for number in [
+        "app-a#101",
+        "app-b#201",
+        "app-c#301",
+        "app-a#102",
+        "app-b#202",
+        "app-d#401",
+    ] {
+        assert!(
+            rig.workspace
+                .join(format!("run-ledger/classifier/{number}.verdict"))
+                .is_file(),
+            "PR {number} has its own verdict file"
+        );
+    }
+    // Two stage-2 packages, one per actionable PR: the rev-sync PR's
+    // applier package and the hoist PR's filer package.
+    for number in ["app-a#101", "app-b#201"] {
+        assert!(
+            rig.workspace
+                .join(format!("run-ledger/drafts/{number}.md"))
+                .is_file(),
+            "PR {number} advanced to its stage-2 package"
+        );
+    }
+    // The irrelevant PRs advanced nowhere, and nothing invented drafts.
+    for number in ["app-c#301", "app-a#102", "app-b#202", "app-d#401"] {
+        assert!(
+            !rig.workspace
+                .join(format!("run-ledger/drafts/{number}.md"))
+                .exists(),
+            "PR {number} is irrelevant and has no stage-2 package"
+        );
+    }
+    // Every child the run launched also settled: the drain holds even
+    // though the driver path here skips production's run-end drain.
+    let (started, finished, _peak) = spawn_counts(&rig.events);
+    assert!(started >= 8, "the fan-out ran: {started}");
+    assert_eq!(started, finished, "no child is left dangling");
 }
 
 /// Reads the drained event stream: (children launched, children settled,

@@ -1,4 +1,4 @@
-//! The simulation rig: one workspace carrying the 16-step plan, the
+//! The simulation rig: one workspace carrying the 10-step plan, the
 //! profile map the executor resolves each step against, the hub catalog
 //! the spawn calls resolve against, and the event stream the spawn
 //! proofs read.
@@ -58,8 +58,17 @@ pub fn rig(name: &str) -> Rig {
     ));
     std::fs::create_dir_all(&workspace).expect("workspace");
     std::fs::create_dir_all(workspace.join("sessions")).expect("sessions dir");
-    let provider = SimProvider::new();
-    let spawn_tools = ["read_file", "write_file", "spawn_agent", "spawn_agents"];
+    // The provider reads the workspace: the simulated orchestrator learns
+    // which PRs still need their stage-2 child from the ledger files.
+    let provider = SimProvider::new(workspace.clone());
+    let spawn_tools = [
+        "bash",
+        "read_file",
+        "write_file",
+        "spawn_agent",
+        "spawn_agents",
+        "poll_agents",
+    ];
     let read_write = ["read_file", "write_file"];
     let read_only = ["read_file"];
     let mut agents = BTreeMap::new();
@@ -68,33 +77,21 @@ pub fn rig(name: &str) -> Rig {
         profile("sim-orchestrator", &spawn_tools),
     );
     agents.insert(
-        "classify".to_string(),
+        "pr-pipeline".to_string(),
         profile("sim-orchestrator", &spawn_tools),
     );
     agents.insert(
-        "classify-gate".to_string(),
+        "pipeline-gate".to_string(),
         profile("sim-judge", &read_only),
     );
     agents.insert(
-        "classify-appeal".to_string(),
+        "pipeline-appeal".to_string(),
         profile("sim-judge", &read_only),
     );
-    agents.insert(
-        "file-draft".to_string(),
-        profile("sim-orchestrator", &spawn_tools),
-    );
-    agents.insert("file-gate".to_string(), profile("sim-judge", &read_only));
-    agents.insert("file-appeal".to_string(), profile("sim-judge", &read_only));
     agents.insert(
         "file-commit".to_string(),
         profile("sim-committer", &read_write),
     );
-    agents.insert(
-        "bump-draft".to_string(),
-        profile("sim-orchestrator", &spawn_tools),
-    );
-    agents.insert("bump-gate".to_string(), profile("sim-judge", &read_only));
-    agents.insert("bump-appeal".to_string(), profile("sim-judge", &read_only));
     agents.insert(
         "bump-commit".to_string(),
         profile("sim-committer", &read_write),
@@ -113,11 +110,12 @@ pub fn rig(name: &str) -> Rig {
         profile("sim-committer", &read_write),
     );
     // The specialists the dispatcher steps spawn: the catalog the hub
-    // resolves a spawn call's profile against is the same one.
+    // resolves a spawn call's profile against is the same one. The
+    // classifier is depth-1 and never spawns — no coordinator level.
     agents.insert("cloner".to_string(), profile("sim-cloner", &read_write));
     agents.insert(
         "classifier".to_string(),
-        profile("sim-classifier", &spawn_tools),
+        profile("sim-classifier", &read_write),
     );
     agents.insert("filer".to_string(), profile("sim-filer", &read_write));
     agents.insert("applier".to_string(), profile("sim-applier", &read_write));
@@ -128,7 +126,7 @@ pub fn rig(name: &str) -> Rig {
     };
     let settings = SubagentSettings {
         caps: SubagentCaps {
-            max_depth: 3,
+            max_depth: 2,
             max_total: 512,
             max_concurrency: 512,
         },

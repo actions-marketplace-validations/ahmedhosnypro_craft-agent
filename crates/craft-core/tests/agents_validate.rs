@@ -153,6 +153,27 @@ fn unknown_tool_id_is_rejected() {
 }
 
 #[test]
+fn the_spawn_pool_vocabulary_is_accepted() {
+    let path = agent(
+        "probe.md",
+        "tools: bash, read_file, spawn_agent, spawn_agents, poll_agents\n",
+    )
+    .unwrap();
+    let file = load_file(&path).expect("the spawn pool ids must load");
+    let tools = file.tools.unwrap_or_default();
+    assert_eq!(
+        tools,
+        vec![
+            "bash".to_string(),
+            "read_file".to_string(),
+            "spawn_agent".to_string(),
+            "spawn_agents".to_string(),
+            "poll_agents".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn unknown_disallowed_tool_id_is_rejected() {
     let path = agent("probe.md", "disallowedTools: shell\n").unwrap();
     expect(&path, "unknown tool id 'shell' in disallowedTools");

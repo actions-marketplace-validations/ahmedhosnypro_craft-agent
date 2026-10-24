@@ -95,7 +95,10 @@ impl Tool for PollAgentsTool {
     }
 }
 
-/// Waits bounded for a settle, then renders everything collected.
+/// Waits bounded for the requested work to settle, then renders
+/// everything collected. A poll answers as soon as at least one
+/// requested id parks, so several polls may drain one wave; the wait
+/// only bounds how long one call holds.
 async fn collect(hub: &crate::subagent::SubagentHub, ids: &[String], wait: u64) -> ToolEvent {
     if wait == 0 {
         return terminal(hub, hub.take_parked(ids));

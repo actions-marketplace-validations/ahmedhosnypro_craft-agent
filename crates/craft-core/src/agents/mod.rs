@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// The builtin tool ids an agent file may name in `tools` or
 /// `disallowedTools`.
-pub const TOOL_IDS: [&str; 9] = [
+pub const TOOL_IDS: [&str; 10] = [
     "bash",
     "read_file",
     "write_file",
@@ -25,6 +25,7 @@ pub const TOOL_IDS: [&str; 9] = [
     "gh",
     "spawn_agent",
     "spawn_agents",
+    "poll_agents",
 ];
 
 /// Frontmatter keys the format accepts; anything else is an error.

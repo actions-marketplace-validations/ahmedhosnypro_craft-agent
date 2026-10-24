@@ -18,6 +18,7 @@ use craft_tools::write::WriteFileTool;
 
 use crate::agent_tool::SpawnAgentTool;
 use crate::agents_tool::SpawnAgentsTool;
+use crate::polls_tool::PollAgentsTool;
 use crate::subagent::SubagentWiring;
 
 /// The registry for the selected (or absent) profile. `spawn` carries
@@ -59,12 +60,13 @@ const BUILTIN_IDS: [&str; 7] = [
     "grep",
     "gh",
 ];
-const SPAWN_IDS: [&str; 2] = ["spawn_agent", "spawn_agents"];
+const SPAWN_IDS: [&str; 3] = ["spawn_agent", "spawn_agents", "poll_agents"];
 
 fn with_spawn(mut registry: Registry, spawn: Option<SubagentWiring>) -> Registry {
     if let Some(wiring) = spawn {
         registry.register(Box::new(SpawnAgentTool::new(wiring.clone())));
-        registry.register(Box::new(SpawnAgentsTool::new(wiring)));
+        registry.register(Box::new(SpawnAgentsTool::new(wiring.clone())));
+        registry.register(Box::new(PollAgentsTool::new(wiring)));
     }
     registry
 }
@@ -89,6 +91,10 @@ fn register_one(
         },
         "spawn_agents" => match spawn {
             Some(wiring) => Box::new(SpawnAgentsTool::new(wiring)),
+            None => return,
+        },
+        "poll_agents" => match spawn {
+            Some(wiring) => Box::new(PollAgentsTool::new(wiring)),
             None => return,
         },
         _ => return,

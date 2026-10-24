@@ -6,6 +6,7 @@
 //! `subagent_admit`; child preparation in `child`.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,9 +48,9 @@ impl SubagentCaps {
     /// Reads the three cap knobs from the process environment.
     pub fn from_env() -> Result<Self, String> {
         Self::resolve(
-            std::env::var(ENV_MAX_DEPTH).ok(),
-            std::env::var(ENV_MAX_TOTAL).ok(),
-            std::env::var(ENV_MAX_CONCURRENCY).ok(),
+            std::env::var(super::subagent_caps::ENV_MAX_DEPTH).ok(),
+            std::env::var(super::subagent_caps::ENV_MAX_TOTAL).ok(),
+            std::env::var(super::subagent_caps::ENV_MAX_CONCURRENCY).ok(),
         )
     }
 
@@ -61,65 +62,21 @@ impl SubagentCaps {
         concurrency: Option<String>,
     ) -> Result<Self, String> {
         Ok(Self {
-            max_depth: u8::try_from(parse_cap(CapSpec::DEPTH, depth)?)
-                .map_err(|_| CapSpec::DEPTH.range_error())?,
-            max_total: parse_cap(CapSpec::TOTAL, total)?,
-            max_concurrency: parse_cap(CapSpec::CONCURRENCY, concurrency)?,
+            max_depth: u8::try_from(super::subagent_caps::parse_cap(
+                super::subagent_caps::CapSpec::DEPTH,
+                depth,
+            )?)
+            .map_err(|_| super::subagent_caps::CapSpec::DEPTH.range_error())?,
+            max_total: super::subagent_caps::parse_cap(
+                super::subagent_caps::CapSpec::TOTAL,
+                total,
+            )?,
+            max_concurrency: super::subagent_caps::parse_cap(
+                super::subagent_caps::CapSpec::CONCURRENCY,
+                concurrency,
+            )?,
         })
     }
-}
-
-/// One cap knob: its environment name plus its default and bounds.
-struct CapSpec {
-    knob: &'static str,
-    default: u64,
-    min: u64,
-    max: u64,
-}
-
-impl CapSpec {
-    const DEPTH: Self = Self {
-        knob: ENV_MAX_DEPTH,
-        default: 2,
-        min: 0,
-        max: 4,
-    };
-    const TOTAL: Self = Self {
-        knob: ENV_MAX_TOTAL,
-        default: 32,
-        min: 1,
-        max: 1024,
-    };
-    const CONCURRENCY: Self = Self {
-        knob: ENV_MAX_CONCURRENCY,
-        default: 4,
-        min: 1,
-        max: 1024,
-    };
-
-    fn range_error(&self) -> String {
-        format!(
-            "{} must be a whole number between {} and {}",
-            self.knob, self.min, self.max
-        )
-    }
-}
-
-fn parse_cap(spec: CapSpec, raw: Option<String>) -> Result<u32, String> {
-    let Some(raw) = raw else {
-        return Ok(u32::try_from(spec.default).unwrap_or_default());
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(spec.range_error());
-    }
-    let value: u64 = trimmed
-        .parse()
-        .map_err(|_| format!("{}; got `{trimmed}`", spec.range_error()))?;
-    if value < spec.min || value > spec.max {
-        return Err(format!("{}; got `{trimmed}`", spec.range_error()));
-    }
-    Ok(u32::try_from(value).unwrap_or_default())
 }
 
 /// The fixed inputs every child inherits: caps, the parent run's
@@ -206,11 +163,29 @@ pub(crate) struct HubState {
     pub(crate) settled: std::collections::HashSet<String>,
     pub(crate) child_usage: HashMap<String, Usage>,
     pub(crate) child_turn: HashMap<String, u32>,
+    /// Detached children waiting for a free slot, in dispatch order.
+    pub(crate) bg_queued: VecDeque<BgMember>,
+    /// Settled detached children the parent has not polled yet.
+    pub(crate) bg_parked: HashMap<String, ParkedChild>,
 }
 
 pub(crate) struct AdmittedChild {
     pub(crate) slice: Option<u64>,
     pub(crate) profile: String,
+}
+
+/// One detached member awaiting its turn in the pool.
+pub(crate) struct BgMember {
+    pub(crate) child: crate::spawn::TrackedChild,
+    /// The call's turn cap, recorded for the launch event.
+    pub(crate) max_turns: u32,
+}
+
+/// One settled detached child held for its parent's next poll.
+pub(crate) struct ParkedChild {
+    pub(crate) report: crate::envelope::ChildReport,
+    pub(crate) profile: String,
+    pub(crate) budget_remaining: u64,
 }
 
 /// Token total across every usage bucket, matching the budget
@@ -238,6 +213,8 @@ impl Default for HubState {
             settled: std::collections::HashSet::new(),
             child_usage: HashMap::new(),
             child_turn: HashMap::new(),
+            bg_queued: std::collections::VecDeque::new(),
+            bg_parked: HashMap::new(),
         }
     }
 }

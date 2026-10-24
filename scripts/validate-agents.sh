@@ -55,7 +55,7 @@ KNOWN_FIELDS=(
 )
 TOOLS_FIELDS=(tools disallowedTools)
 GLOBS_FIELDS=(denyRead denyWrite)
-REGISTRY=(bash read_file write_file edit_file glob grep gh spawn_agent spawn_agents)
+REGISTRY=(bash read_file write_file edit_file glob grep gh spawn_agent spawn_agents poll_agents)
 GLOB_LIST_CAP=16
 GLOB_CHAR_CAP=128
 # Enumerated character classes keep the matches locale-independent.

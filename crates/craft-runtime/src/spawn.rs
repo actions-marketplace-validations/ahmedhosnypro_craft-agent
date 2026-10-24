@@ -66,6 +66,16 @@ impl TrackedChild {
         &self.id
     }
 
+    /// The wall clock armed on this child, for the launch event.
+    pub(crate) fn timeout_secs(&self) -> Option<u64> {
+        self.timeout_secs
+    }
+
+    /// The hub this child settles against, for a detached pool task.
+    pub(crate) fn hub(&self) -> Arc<SubagentHub> {
+        self.hub.clone()
+    }
+
     pub(crate) fn mark_launched(&mut self) {
         self.launched = true;
     }
@@ -108,7 +118,7 @@ impl Drop for TrackedChild {
 
 /// Prepares one child run and its tracked future; session directory
 /// creation is the only fallible I/O, a typed error before launch.
-fn prepare_member(
+pub(crate) fn prepare_member(
     wiring: &SubagentWiring,
     request: &SpawnRequest,
     id: &str,

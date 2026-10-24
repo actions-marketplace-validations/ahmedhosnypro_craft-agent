@@ -19,7 +19,8 @@ const DESCRIPTION: &str = "Runs one named subagent profile on a \
 self-contained prompt to completion and returns its envelope: \
 status, stop reason, turns, usage, transcript path, and the child's \
 final message. The child has its own context, budget, and \
-transcript; the parent sees only the envelope.";
+transcript; the parent sees only the envelope. Pass detached: true to \
+return at admission and collect the envelope later with poll_agents.";
 
 const PROPS: &[Prop] = &[
     Prop {
@@ -52,6 +53,12 @@ const PROPS: &[Prop] = &[
         required: false,
         desc: "Wall-clock cap in seconds, 0 (none) to 21600.",
     },
+    Prop {
+        name: "detached",
+        ty: Schema::Bool,
+        required: false,
+        desc: "Return at admission without awaiting the child; collect its envelope with poll_agents.",
+    },
 ];
 
 pub(crate) struct SpawnAgentTool {
@@ -79,6 +86,7 @@ impl Tool for SpawnAgentTool {
 
     fn execute(&self, args: Value, _ctx: &ToolCtx) -> ToolStream {
         match plan_single(&self.wiring, &args) {
+            Ok(request) if request.detached => crate::detached::drive(request, &self.wiring),
             Ok(request) => spawn::drive(request, &self.wiring),
             Err(msg) => event::error_stream(ToolError::InvalidArgs {
                 tool: self.name().to_string(),

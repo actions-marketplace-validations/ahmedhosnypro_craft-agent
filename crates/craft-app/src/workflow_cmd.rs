@@ -223,7 +223,7 @@ fn execute_workflow_inner(
         None,
         agents,
     )
-    .with_subagents(Some(hub))
+    .with_subagents(Some(hub.clone()))
     .with_sink(Some(step_sink));
     sink.emit(RuntimeEvent::WorkflowStarted {
         run_id: run_id.clone(),
@@ -236,7 +236,7 @@ fn execute_workflow_inner(
         .build()
         .map_err(|source| AppError::AsyncRuntime { source })?;
     let report = runtime.block_on(drive_workflow(
-        &plan_spec, &args, &executor, journal, &sink, writer,
+        &plan_spec, &args, &executor, journal, &sink, writer, hub,
     ))?;
     summary::emit_workflow_summary(
         &env,
@@ -294,8 +294,8 @@ enum DriveEnd {
 }
 
 /// Drives the engine to its terminal report, ending the run the
-/// moment the event-stream consumer goes away, then emits the
-/// `workflow_finished` line and drains the writer.
+/// moment the event-stream consumer goes away, then drains the run's
+/// detached pool and emits the `workflow_finished` line.
 pub async fn drive_workflow<E: craft_workflow::engine::StepExecutor + Sync>(
     plan_spec: &WorkflowPlan,
     args: &BTreeMap<String, ArgValue>,
@@ -303,6 +303,7 @@ pub async fn drive_workflow<E: craft_workflow::engine::StepExecutor + Sync>(
     mut journal: Journal,
     sink: &crate::event_writer::EventSink,
     writer: crate::event_writer::EventWriterHandle,
+    hub: SubagentWiring,
 ) -> Result<craft_workflow::WorkflowReport, AppError> {
     let mut closed = writer.closed().clone();
     let _ = closed.borrow_and_update();
@@ -315,6 +316,10 @@ pub async fn drive_workflow<E: craft_workflow::engine::StepExecutor + Sync>(
         },
         _ = closed.changed() => DriveEnd::Closed,
     };
+    // The pool outlives its step, so a run ending with detached
+    // children in flight drains them here: bounded, and every straggler
+    // settles typed rather than vanishing from the ledger.
+    craft_runtime::drain_detached(&hub, craft_runtime::DETACHED_DRAIN).await;
     let report = match end {
         DriveEnd::Report(report) => report,
         DriveEnd::Failed(err) => {

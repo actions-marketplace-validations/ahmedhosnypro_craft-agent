@@ -24,8 +24,11 @@ pub mod profile;
 pub mod runner;
 pub mod session;
 pub mod subagent;
+mod subagent_caps;
 
+mod detached;
 mod envelope;
+mod polls_tool;
 mod subagent_admit;
 
 mod agent_tool;
@@ -46,6 +49,7 @@ pub mod retry;
 
 pub use child::{ChildKnobs, ChildRun, prepare_child};
 pub use craft_core::subagent::SUBAGENT_OVERLAY;
+pub use detached::{DETACHED_DRAIN, drain_detached};
 pub use envelope::ChildReport;
 pub use events::{CancelCategory, RuntimeEvent, ToolStreamName, redact_event};
 pub use outcome::{ExitStatus, RunOutcome};

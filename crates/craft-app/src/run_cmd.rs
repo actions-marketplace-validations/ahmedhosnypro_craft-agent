@@ -63,6 +63,8 @@ struct MountedRun {
     prompt: String,
     caps: RunCaps,
     deadline: Option<u64>,
+    /// The run's detached-pool wiring, drained when the run ends.
+    pool: Option<craft_runtime::SubagentWiring>,
     format: crate::cli::OutputFormat,
     session_path: Option<std::path::PathBuf>,
     watch: Arc<Mutex<RunWatch>>,
@@ -105,12 +107,13 @@ fn mount_run(
         profile::build_registry(agent.as_ref(), ToolLimits::default(), subagents.clone());
     let mut run_config = run_config;
     run_config.redactor = redactor.clone();
-    run_config.subagents = subagents;
+    run_config.subagents = subagents.clone();
     Ok(Some(MountedRun {
         runner: Runner::new(backend, run_registry, run_config),
         prompt,
         caps,
         deadline,
+        pool: subagents,
         format: run.output_format,
         session_path,
         watch: Arc::new(Mutex::new(RunWatch::default())),
@@ -128,6 +131,7 @@ fn drive_run(
         prompt,
         caps,
         deadline,
+        pool,
         format,
         session_path,
         watch,
@@ -156,7 +160,7 @@ fn drive_run(
                 }
             };
             tokio::pin!(kill);
-            tokio::select! {
+            let outcome = tokio::select! {
                 biased;
                 outcome = &mut run_future => outcome,
                 () = &mut kill => {
@@ -165,7 +169,14 @@ fn drive_run(
                     sink.finish(event);
                     outcome
                 }
+            };
+            // A detached pool outlives its parent turn, so a run that
+            // ends with children in flight drains them here: bounded,
+            // and every straggler settles typed rather than vanishing.
+            if let Some(wiring) = &pool {
+                craft_runtime::drain_detached(wiring, craft_runtime::DETACHED_DRAIN).await;
             }
+            outcome
         };
         runtime.block_on(event_writer::drive(driven, writer, session_path.clone()))
     };

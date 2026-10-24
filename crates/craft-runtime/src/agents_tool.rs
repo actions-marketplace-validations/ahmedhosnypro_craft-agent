@@ -19,7 +19,10 @@ const DESCRIPTION: &str = "Runs a batch of 2 to 32 same-profile \
 subagents in parallel, filling one prompt template per item, and \
 returns one envelope per member plus a completed/failed/timed_out \
 tally. Use it when several independent subtasks would otherwise \
-flood this context.";
+flood this context. Pass detached: true to return at admission and \
+collect the envelopes later with poll_agents — the members still run \
+concurrently under the same cap, but no single call awaits the whole \
+wave.";
 
 const PROPS: &[Prop] = &[
     Prop {
@@ -58,6 +61,12 @@ const PROPS: &[Prop] = &[
         required: false,
         desc: "Per-member wall-clock cap in seconds, 0 (none) to 21600.",
     },
+    Prop {
+        name: "detached",
+        ty: Schema::Bool,
+        required: false,
+        desc: "Return at admission without awaiting members; collect their envelopes with poll_agents.",
+    },
 ];
 
 pub(crate) struct SpawnAgentsTool {
@@ -85,6 +94,7 @@ impl Tool for SpawnAgentsTool {
 
     fn execute(&self, args: Value, _ctx: &ToolCtx) -> ToolStream {
         match plan_batch(&self.wiring, &args) {
+            Ok(request) if request.detached => crate::detached::drive(request, &self.wiring),
             Ok(request) => spawn::drive(request, &self.wiring),
             Err(msg) => event::error_stream(ToolError::InvalidArgs {
                 tool: self.name().to_string(),

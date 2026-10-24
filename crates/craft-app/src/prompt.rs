@@ -63,6 +63,12 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "You are craft-agent, a headless coding 
      from one template, run in parallel up to the concurrency cap;\n\
      the result carries one envelope per member plus a tally. Failed\n\
      members are data for your next decision, never a reason to stop.\n\
+     With detached: true both spawn tools return at admission - the\n\
+     members still run concurrently, but no call awaits the whole\n\
+     wave - and poll_agents collects their envelopes by id or in bulk,\n\
+     optionally waiting bounded seconds for the next settle. Detached\n\
+     work is how independent items advance per item instead of in\n\
+     waves: launch everything, do other work, collect as each lands.\n\
      \n\
      Hard caps: 2 MiB per read or write, 200 results per glob or grep,\n\
      64 KiB per script, 256 KiB of output per bash or gh call. Prefer\n\

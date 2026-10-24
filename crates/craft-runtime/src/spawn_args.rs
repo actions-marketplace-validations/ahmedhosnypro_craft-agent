@@ -23,6 +23,9 @@ pub(crate) struct SpawnRequest {
     pub(crate) slice: Option<u64>,
     pub(crate) timeout_secs: Option<u64>,
     pub(crate) batch: bool,
+    /// Launch without awaiting: the call returns at admission and the
+    /// parent collects envelopes later with `poll_agents`.
+    pub(crate) detached: bool,
 }
 
 /// A bounded, printable rendering of a hostile argument for error
@@ -106,6 +109,16 @@ fn resolve_timeout(arg: Option<u64>, profile: &AgentFile) -> Option<u64> {
     }
 }
 
+/// Reads a boolean flag; an absent or null value is false, and any
+/// other type is a typed error naming the flag.
+fn opt_flag(map: &serde_json::Map<String, Value>, key: &str) -> Result<bool, String> {
+    match map.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(other) => Err(format!("{key} must be a boolean; got `{}`", preview(other))),
+    }
+}
+
 /// Validates and resolves `spawn_agent`'s arguments against the
 /// catalog and the hub's budget view.
 pub(crate) fn plan_single(wiring: &SubagentWiring, args: &Value) -> Result<SpawnRequest, String> {
@@ -122,6 +135,7 @@ pub(crate) fn plan_single(wiring: &SubagentWiring, args: &Value) -> Result<Spawn
     let max_turns = opt_u64(map, "maxTurns", 1, u64::from(MAX_TURNS_CEILING))?;
     let max_tokens = opt_u64(map, "maxTokens", 1, u64::MAX)?;
     let timeout_secs = opt_u64(map, "timeoutSecs", 0, TIMEOUT_SECS_CEILING)?;
+    let detached = opt_flag(map, "detached")?;
     let profile = wiring.hub.profile(&agent)?;
     Ok(SpawnRequest {
         max_turns: resolve_turns(max_turns, &profile),
@@ -130,6 +144,7 @@ pub(crate) fn plan_single(wiring: &SubagentWiring, args: &Value) -> Result<Spawn
         members: vec![prompt],
         profile,
         batch: false,
+        detached,
     })
 }
 
@@ -155,6 +170,7 @@ pub(crate) fn plan_batch(wiring: &SubagentWiring, args: &Value) -> Result<SpawnR
     let max_turns = opt_u64(map, "maxTurns", 1, u64::from(MAX_TURNS_CEILING))?;
     let max_tokens = opt_u64(map, "maxTokens", 1, u64::MAX)?;
     let timeout_secs = opt_u64(map, "timeoutSecs", 0, TIMEOUT_SECS_CEILING)?;
+    let detached = opt_flag(map, "detached")?;
     let profile = wiring.hub.profile(&batch.agent)?;
     let members: Vec<String> = specs.into_iter().map(|spec| spec.prompt).collect();
     Ok(SpawnRequest {
@@ -164,6 +180,7 @@ pub(crate) fn plan_batch(wiring: &SubagentWiring, args: &Value) -> Result<SpawnR
         members,
         profile,
         batch: true,
+        detached,
     })
 }
 

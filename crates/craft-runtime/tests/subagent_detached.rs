@@ -234,14 +234,22 @@ async fn detached_concurrency_cap_queues_the_rest() {
 async fn detached_child_past_its_wall_clock_settles_timed_out() {
     let spawn_args = detached_args(
         &["alpha", "beta"],
-        ", \"detached\": true, \"timeoutSecs\": 1",
+        ", \"detached\": true, \"timeoutSecs\": 2",
     );
-    let provider = subagent_common::FakeProvider::new(round_trip(
-        2,
-        &spawn_args,
-        "{\"waitSecs\": 10}",
-        Duration::from_secs(3),
-    ));
+    let provider = subagent_common::FakeProvider::new(vec![
+        tool_reply("c1", "spawn_agents", &spawn_args, usage(10, 5)),
+        tool_reply("c2", "poll_agents", "{\"waitSecs\": 15}", usage(10, 5)),
+        tool_reply("c3", "poll_agents", "{\"waitSecs\": 15}", usage(10, 5)),
+        delayed(
+            text_reply("scout too slow", usage(4, 2)),
+            Duration::from_secs(6),
+        ),
+        delayed(
+            text_reply("scout too slow", usage(4, 2)),
+            Duration::from_secs(6),
+        ),
+        text_reply("parent done", usage(10, 5)),
+    ]);
     let rig = subagent_common::rig(
         subagent_common::RigSpec::memory("detached-timeout", 100_000),
         provider.clone(),
@@ -252,10 +260,11 @@ async fn detached_child_past_its_wall_clock_settles_timed_out() {
         subagent_common::run(config, registry, provider.clone(), "Drive the run.").await;
     assert_eq!(outcome.exit, ExitStatus::Ok, "{:?}", outcome.detail);
 
-    // The poll waits past both one-second clocks, so it answers once
-    // both children are settled and the pool is drained. A poll answers
-    // on its first settle, so the exact call count is not the contract —
-    // the settled state is.
+    // The clock is well inside the delay, so both members are reclaimed
+    // before the poll's wait expires. A poll answers on its first
+    // settle, so one call may return a single member while the other is
+    // mid-clock; the parent polls again until the pool drains. The
+    // contract is the settled state — typed, complete, nothing lost.
     let results = subagent_common::tool_results(&events);
     let polls: Vec<&str> = results[1..]
         .iter()

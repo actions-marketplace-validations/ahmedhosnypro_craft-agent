@@ -252,14 +252,31 @@ async fn detached_child_past_its_wall_clock_settles_timed_out() {
         subagent_common::run(config, registry, provider.clone(), "Drive the run.").await;
     assert_eq!(outcome.exit, ExitStatus::Ok, "{:?}", outcome.detail);
 
+    // The poll waits past both one-second clocks, so it answers once
+    // both children are settled and the pool is drained. A poll answers
+    // on its first settle, so the exact call count is not the contract —
+    // the settled state is.
     let results = subagent_common::tool_results(&events);
-    let polled = &results[1].1;
-    assert!(polled.contains("stop_reason: timed_out"), "{polled}");
+    let polls: Vec<&str> = results[1..]
+        .iter()
+        .map(|(_e, text)| text.as_str())
+        .collect();
     assert!(
-        polled.contains("tally: completed: 0, failed: 0, timed_out: 2"),
-        "{polled}"
+        polls
+            .iter()
+            .any(|text| text.contains("stop_reason: timed_out")),
+        "the clock-reclaimed child reports timed_out: {polls:?}"
     );
-    assert!(polled.contains("outstanding: none"), "{polled}");
+    assert!(
+        polls.iter().any(|text| text.contains("timed_out: 2")),
+        "both clock-reclaimed children were collected: {polls:?}"
+    );
+    assert!(
+        polls
+            .last()
+            .is_some_and(|text| text.contains("outstanding: none")),
+        "the pool drains empty: {polls:?}"
+    );
     let finished = subagent_common::finished(&events);
     assert_eq!(finished.len(), 2, "both clock-reclaimed children settled");
     for (_id, stop, _turns) in &finished {

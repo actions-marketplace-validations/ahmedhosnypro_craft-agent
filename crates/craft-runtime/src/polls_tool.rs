@@ -130,7 +130,9 @@ fn terminal(
     let mut output = if handoffs.is_empty() {
         String::from("poll: 0 collected\n")
     } else {
-        craft_core::subagent::handoff::render_batch(&handoffs)
+        let mut rendered = craft_core::subagent::handoff::render_batch(&handoffs);
+        rendered.push('\n');
+        rendered
     };
     if outstanding.is_empty() {
         output.push_str("outstanding: none\n");

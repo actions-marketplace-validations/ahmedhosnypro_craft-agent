@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Asserts one finished workflow sim run against the five proofs the
-# engine fix must show locally before anything goes to the cloud:
+# Asserts one finished workflow sim run against the proofs the per-PR
+# architecture must show before anything goes to the cloud:
 #
-#   1. spawn tools live  — the fan-out steps actually launched children
-#   2. parallelism       — many small children ran concurrently
-#   3. wall time         — the serialize-bound phases are fast
-#   4. gates settle      — every judge gate reached a verdict
-#   5. fail closed       — a hostile cap knob aborts, never degrades
+#   1. spawn tools live   — the fan-out steps actually launched children
+#   2. parallelism        — many small children ran concurrently
+#   3. every child settled — none left dangling mid-flight
+#   4. per-PR pipelines   — one classifier child per PR, and a PR advanced
+#                           to stage 2 while its siblings were still early
+#   5. gates settle       — every step reached a clean conclusion
+#   plus the run's wall time and its own reported conclusion.
 #
 # Usage: sim/assert-workflow.sh <run-dir> [--min-children N] [--max-seconds N]
 # Exits nonzero with the failing proof named. jq and awk only.
@@ -90,7 +92,22 @@ finished="$(awk '/subagent_finished/ {n++} END {print n+0}' "$stream")"
   fail "only $finished children finished (want >= $min_children)"
 pass "all $finished children settled, none dangling"
 
-# --- 4. gates settle: the journal carries no errored judge step -------------------
+# --- 4. per-PR pipelines: the classifier fanned out per PR, and the
+#        stage-2 profiles ran alongside it ---------------------------------
+# One child per PR means the classifier profile carried the bulk of the
+# fan-out; a batch-of-N coordinator would show a handful of classifier
+# children each doing serial work. The stage-2 profiles (the applier and
+# the filer) running at the same time is the proof that a PR advanced
+# while its siblings were still in their first stage.
+classifier_count="$(printf '%s\n' "$started" | awk -v p=merge-classifier '$2 == p {print $1; found=1} END {if (!found) print 0}')"
+stage2_count="$(printf '%s\n' "$started" | awk '($2 == "revsync-applier" || $2 == "finding-filer") {n += $1} END {print n+0}')"
+[ "${classifier_count:-0}" -ge "$min_children" ] ||
+  fail "the classifier profile carried only ${classifier_count:-0} children (want >= $min_children) — the window was classified in batches, not one child per PR"
+[ "${stage2_count:-0}" -ge 1 ] ||
+  fail "no stage-2 child ran — no PR advanced while its siblings were still early"
+pass "per-PR pipelines: $classifier_count classifier children, $stage2_count stage-2 children ran alongside"
+
+# --- 5. gates settle: the journal carries no errored judge step -------------------
 gate_errors="$(jq -r '
   select(.type == "step_finished")
   | select(.conclusion == "error")
@@ -116,4 +133,4 @@ case "$conclusion" in
   *) fail "the run concluded $conclusion (failed step: ${failed_step:-none})" ;;
 esac
 
-printf 'all five proofs hold for %s\n' "$run_dir"
+printf 'all proofs hold for %s\n' "$run_dir"
